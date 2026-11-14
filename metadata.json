@@ -1,0 +1,8 @@
+{
+  "name": "Чёрное озеро: Саша на лодке",
+  "description": "Аркадная 2D-игра о герое Саше, который плывёт на моторной лодке по мрачному Чёрному озеру и сражается с волнами монстров-рыб.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
