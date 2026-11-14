@@ -1,0 +1,193 @@
+{
+  "entities": {
+    "SavedRunSnapshot": {
+      "title": "SavedRunSnapshot",
+      "description": "Active or paused Black Lake tour progress snapshot that lets the player resume their voyage.",
+      "type": "object",
+      "properties": {
+        "difficulty": {
+          "type": "string",
+          "enum": ["calm", "hunt", "nightmare"],
+          "description": "Selected difficulty mode"
+        },
+        "renderMode": {
+          "type": "string",
+          "enum": ["2d", "3d"],
+          "description": "Active engine render mode at save time"
+        },
+        "wave": {
+          "type": "integer",
+          "description": "Current tour number (1..20)"
+        },
+        "score": {
+          "type": "integer",
+          "description": "Current run score"
+        },
+        "coins": {
+          "type": "integer",
+          "description": "Current run trophy coins"
+        },
+        "weather": {
+          "type": "string",
+          "enum": ["clear", "mist", "rain", "storm"],
+          "description": "Active weather condition"
+        },
+        "monstersKilled": {
+          "type": "integer",
+          "description": "Monsters killed in this run"
+        },
+        "leviathansKilled": {
+          "type": "integer",
+          "description": "Leviathans defeated in this run"
+        },
+        "crocsKilled": {
+          "type": "integer",
+          "description": "Crocodile Genas defeated in this run"
+        },
+        "maxCombo": {
+          "type": "integer",
+          "description": "Highest combo reached in this run"
+        },
+        "stats": {
+          "type": "object",
+          "description": "Current player boat and weapon stats map"
+        },
+        "upgradeLevels": {
+          "type": "object",
+          "description": "Current upgrade levels map"
+        },
+        "killsByKind": {
+          "type": "object",
+          "description": "Kills per monster species in this run"
+        },
+        "savedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp when the run was saved"
+        }
+      },
+      "required": [
+        "difficulty",
+        "renderMode",
+        "wave",
+        "score",
+        "coins",
+        "weather",
+        "monstersKilled",
+        "leviathansKilled",
+        "crocsKilled",
+        "maxCombo",
+        "stats",
+        "upgradeLevels",
+        "killsByKind",
+        "savedAt"
+      ]
+    },
+    "PlayerProfile": {
+      "title": "PlayerProfile",
+      "description": "Authenticated player persistent memory: records, bestiary, achievements, and resumable run state.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID owning this profile"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32,
+          "description": "Player display name"
+        },
+        "authMode": {
+          "type": "string",
+          "enum": ["password", "google"],
+          "description": "Authentication method used by this player"
+        },
+        "highScore": {
+          "type": "integer",
+          "description": "Best score achieved by player"
+        },
+        "bestWave": {
+          "type": "integer",
+          "description": "Highest tour reached (0..20)"
+        },
+        "totalMonstersKilled": {
+          "type": "integer",
+          "description": "Cumulative monsters defeated across all runs"
+        },
+        "bestRunKills": {
+          "type": "integer",
+          "description": "Most monsters defeated in a single run"
+        },
+        "bestCombo": {
+          "type": "integer",
+          "description": "Highest combo streak achieved"
+        },
+        "leviathansDefeated": {
+          "type": "integer",
+          "description": "Total Leviathans defeated"
+        },
+        "crocsDefeated": {
+          "type": "integer",
+          "description": "Total Crocodile Genas defeated"
+        },
+        "defeatedByKind": {
+          "type": "object",
+          "description": "Cumulative kills mapped by MonsterKind for Bestiary"
+        },
+        "unlocked": {
+          "type": "object",
+          "description": "Unlocked achievements mapped by AchievementId -> ISO date"
+        },
+        "hasSavedRun": {
+          "type": "boolean",
+          "description": "Whether savedRun contains an active resumable voyage"
+        },
+        "savedRun": {
+          "type": "object",
+          "description": "Resumable run state or null when none",
+          "$ref": "#/entities/SavedRunSnapshot"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last update timestamp"
+        }
+      },
+      "required": [
+        "uid",
+        "username",
+        "authMode",
+        "highScore",
+        "bestWave",
+        "totalMonstersKilled",
+        "bestRunKills",
+        "bestCombo",
+        "leviathansDefeated",
+        "crocsDefeated",
+        "defeatedByKind",
+        "unlocked",
+        "hasSavedRun",
+        "savedRun",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/players/{userId}": {
+      "schema": {
+        "$ref": "#/entities/PlayerProfile"
+      },
+      "description": "Private persistent player memory (records, bestiary unlocks, achievements, and resumable Black Lake voyage) scoped strictly to the owning Firebase Auth UID."
+    }
+  }
+}

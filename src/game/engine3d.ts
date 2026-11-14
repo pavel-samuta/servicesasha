@@ -96,7 +96,35 @@ interface Monster3D {
   jumpVy: number;
   jumpCooldown: number;
   shootCooldown: number;
+  vulnerableTimer: number;
+  armorActive: boolean;
+  isCloaked: boolean;
+  specialCooldown: number;
   rig: MonsterMeshRig;
+}
+
+type HazardKind =
+  | 'slime_cloud'
+  | 'vortex'
+  | 'chrono_bubble'
+  | 'hydro_wedge'
+  | 'decoy_ghost'
+  | 'mirage_clone';
+
+interface HazardZone3D {
+  id: number;
+  kind: HazardKind;
+  x: number;
+  z: number;
+  vx: number;
+  vz: number;
+  radius: number;
+  life: number;
+  maxLife: number;
+  electrified: boolean;
+  tickTimer: number;
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
 }
 
 interface Projectile3D {
@@ -114,6 +142,7 @@ interface Projectile3D {
   life: number;
   isCrit: boolean;
   isBitcoin?: boolean;
+  isVenomous?: boolean;
   pierce: number;
   hitIds: number[];
   mesh: THREE.Object3D;
@@ -186,6 +215,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
   private ringGeo: THREE.RingGeometry;
   private ringMat: THREE.MeshBasicMaterial;
   private shockwaveMat: THREE.MeshBasicMaterial;
+  private electricShockMat: THREE.MeshBasicMaterial;
   private pickupAssets: PickupAssets3D;
 
   private frameId = 0;
@@ -206,6 +236,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     turboprop: 0,
     depth_charges: 0,
     lantern_crit: 0,
+    hull_insulation: 0,
   };
 
   // Boat physics state (in meters)
@@ -219,6 +250,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
   private invulnTimer = 0;
   private dashTimer = 0;
   private dashCooldownTimer = 0;
+  private sonarCooldownTimer = 0;
   private recoil = 0;
   private wakeTimer = 0;
 
@@ -226,6 +258,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
   private projectiles: Projectile3D[] = [];
   private particles: Particle3D[] = [];
   private pickups: Pickup3D[] = [];
+  private hazards: HazardZone3D[] = [];
   private obstacles: WorldObstacle3D[] = [];
 
   private nextEntityId = 1;
@@ -252,6 +285,13 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
   private maxCombo = 0;
   private comboTimer = 0;
   private overdriveTimer = 0;
+  private poisonTimer = 0;
+  private poisonTickTimer = 0;
+  private stunTimer = 0;
+  private disorientTimer = 0;
+  private hudGlitchTimer = 0;
+  private timeSlowTimer = 0;
+  private slimeSlowActive = false;
 
   private fireTimer = 0;
   private screenShake = 0;
@@ -371,6 +411,13 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
       color: '#f59e0b',
       transparent: true,
       opacity: 0.85,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    this.electricShockMat = new THREE.MeshBasicMaterial({
+      color: '#00e5ff',
+      transparent: true,
+      opacity: 0.9,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
@@ -569,6 +616,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
       turboprop: 0,
       depth_charges: 0,
       lantern_crit: 0,
+      hull_insulation: 0,
     };
 
     this.clearDynamicEntities();
@@ -582,6 +630,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     this.invulnTimer = 0;
     this.dashTimer = 0;
     this.dashCooldownTimer = 0;
+    this.sonarCooldownTimer = 0;
     this.recoil = 0;
     this.wakeTimer = 0;
 
@@ -603,11 +652,18 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     this.maxCombo = 0;
     this.comboTimer = 0;
     this.overdriveTimer = 0;
+    this.poisonTimer = 0;
+    this.poisonTickTimer = 0;
+    this.stunTimer = 0;
+    this.disorientTimer = 0;
+    this.hudGlitchTimer = 0;
+    this.timeSlowTimer = 0;
+    this.slimeSlowActive = false;
     this.fireTimer = 0;
     this.screenShake = 0;
     this.paused = false;
     this.waveClearPending = false;
-    this.weatherSystem.reset('clear');
+    this.weatherSystem.reset('clear', 'midnight_pine');
 
     this.beginWave(1);
     this.startLoop();
@@ -619,10 +675,16 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     for (const p of this.projectiles) this.scene.remove(p.mesh);
     for (const pt of this.particles) this.scene.remove(pt.mesh);
     for (const pk of this.pickups) this.scene.remove(pk.mesh);
+    for (const hz of this.hazards) {
+      this.scene.remove(hz.mesh);
+      hz.mesh.geometry.dispose();
+      hz.mat.dispose();
+    }
     this.monsters = [];
     this.projectiles = [];
     this.particles = [];
     this.pickups = [];
+    this.hazards = [];
     this.splashSystem?.reset();
   }
 
@@ -636,11 +698,25 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     this.spawnTimer = 0.4;
     this.crocSpawnTimer = tour.crocInterval * 0.75;
     this.npcShout = null;
+    this.poisonTimer = 0;
+    this.poisonTickTimer = 0;
+    this.stunTimer = 0;
+    this.disorientTimer = 0;
+    this.hudGlitchTimer = 0;
+    this.timeSlowTimer = 0;
+    this.slimeSlowActive = false;
+    for (const hz of this.hazards) {
+      this.scene.remove(hz.mesh);
+      hz.mesh.geometry.dispose();
+      hz.mat.dispose();
+    }
+    this.hazards = [];
 
     // Load tour-specific 3D map, island layout, campfires & sitting alcoholics
     this.obstacles = this.islandManager.loadTour(tour);
     const biome = TOUR_BIOMES[tour.biome];
     this.materials.waterMaterial.color.set(biome.waterTint);
+    this.weatherSystem.setBiome(tour.biome);
     this.weatherSystem.setWeather(tour.weather);
 
     // Ensure boat never overlaps a newly spawned island or reef on tour transition
@@ -710,7 +786,16 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
   public importRunState(state: RunCarryoverState, paused = false) {
     this.difficulty = state.difficulty;
     this.stats = { ...state.stats };
-    this.upgradeLevels = { ...state.upgradeLevels };
+    this.upgradeLevels = {
+      multishot: state.upgradeLevels.multishot ?? 0,
+      heavy_harpoon: state.upgradeLevels.heavy_harpoon ?? 0,
+      rapid_loader: state.upgradeLevels.rapid_loader ?? 0,
+      reinforced_hull: state.upgradeLevels.reinforced_hull ?? 0,
+      turboprop: state.upgradeLevels.turboprop ?? 0,
+      depth_charges: state.upgradeLevels.depth_charges ?? 0,
+      lantern_crit: state.upgradeLevels.lantern_crit ?? 0,
+      hull_insulation: state.upgradeLevels.hull_insulation ?? 0,
+    };
     this.clearDynamicEntities();
     this.boatX = 0;
     this.boatZ = 0;
@@ -721,6 +806,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     this.invulnTimer = 0;
     this.dashTimer = 0;
     this.dashCooldownTimer = 0;
+    this.sonarCooldownTimer = 0;
     this.recoil = 0;
     this.camPos.set(0, 19, 17);
     this.camLook.set(0, 0, 0);
@@ -735,6 +821,13 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     this.combo = 0;
     this.comboTimer = 0;
     this.overdriveTimer = 0;
+    this.poisonTimer = 0;
+    this.poisonTickTimer = 0;
+    this.stunTimer = 0;
+    this.disorientTimer = 0;
+    this.hudGlitchTimer = 0;
+    this.timeSlowTimer = 0;
+    this.slimeSlowActive = false;
     this.paused = paused;
     this.boatRig.lanternLight.distance = 22 + this.upgradeLevels.lantern_crit * 4;
     this.boatRig.searchSpot.distance = 30 + this.upgradeLevels.lantern_crit * 5;
@@ -828,11 +921,22 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
         this.boatRig.lanternLight.distance = 22 + this.upgradeLevels.lantern_crit * 4;
         this.boatRig.searchSpot.distance = 30 + this.upgradeLevels.lantern_crit * 5;
         break;
+      case 'hull_insulation':
+        // Resistance scaling computed dynamically via this.getInsulationMult()
+        break;
     }
 
     soundEngine.playPickup('overdrive');
     this.emitHud();
     return true;
+  }
+
+  private getSonarMaxCooldown(): number {
+    return Math.max(3.6, 7.5 - this.upgradeLevels.lantern_crit * 0.75);
+  }
+
+  private getInsulationMult(): number {
+    return Math.max(0.25, 1 - (this.upgradeLevels.hull_insulation ?? 0) * 0.28);
   }
 
   public repairBoatWithCoins(): boolean {
@@ -849,6 +953,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     this.keys.add(code);
     if (code === 'Space') this.triggerDash();
     else if (code === 'KeyE' || code === 'KeyQ') this.triggerDepthCharge();
+    else if (code === 'KeyF') this.triggerSonarPulse();
   }
 
   public handleKeyUp(code: string) {
@@ -888,6 +993,90 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     this.spawnSplashBurst(this.boatX - Math.sin(this.boatYaw) * 1.3, this.boatZ - Math.cos(this.boatYaw) * 1.3, 14, 'splash', 7.5);
   }
 
+  public triggerSonarPulse() {
+    if (!this.running || this.paused) return;
+    if (this.sonarCooldownTimer > 0) return;
+
+    this.sonarCooldownTimer = this.getSonarMaxCooldown();
+    soundEngine.playSonarPulse();
+    const sonarRadius = 21 + this.upgradeLevels.lantern_crit * 2.5;
+    this.disruptIllusionsAndCloaks(this.boatX, this.boatZ, sonarRadius, true);
+    this.emitHud();
+  }
+
+  private disruptIllusionsAndCloaks(cx: number, cz: number, radius: number, spawnVisualRing: boolean) {
+    if (spawnVisualRing) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: '#38bdf8',
+        transparent: true,
+        opacity: 0.9,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(this.ringGeo, mat);
+      mesh.position.set(cx, 0.25, cz);
+      this.scene.add(mesh);
+      this.particles.push({
+        x: cx,
+        y: 0.25,
+        z: cz,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        gravity: 0,
+        life: 0.55,
+        maxLife: 0.55,
+        startScale: 1.0,
+        endScale: radius,
+        kind: 'shockwave',
+        mesh,
+      });
+    }
+
+    let revealedCount = 0;
+    let shatteredCount = 0;
+
+    // Shatter mirage clones & water-memory decoys
+    for (let i = this.hazards.length - 1; i >= 0; i--) {
+      const hz = this.hazards[i];
+      if (
+        (hz.kind === 'decoy_ghost' || hz.kind === 'mirage_clone') &&
+        Math.hypot(hz.x - cx, hz.z - cz) <= radius
+      ) {
+        this.spawnSplashBurst(hz.x, hz.z, 6, 'spark', 5);
+        this.scene.remove(hz.mesh);
+        hz.mesh.geometry.dispose();
+        hz.mat.dispose();
+        this.hazards.splice(i, 1);
+        shatteredCount++;
+      }
+    }
+
+    // Reveal cloaked Glass Ghosts & stun Mirage Rays briefly
+    for (const m of this.monsters) {
+      const d = Math.hypot(m.x - cx, m.z - cz);
+      if (d <= radius + m.radius) {
+        if (m.isCloaked) {
+          m.isCloaked = false;
+          m.vulnerableTimer = Math.max(m.vulnerableTimer, 2.8);
+          m.stateTimer = 2.6;
+          this.spawnSplashBurst(m.x, m.z, 8, 'spark', 6);
+          revealedCount++;
+        } else if (m.kind === 'mirage_ray' || m.kind === 'glass_ghost') {
+          m.vulnerableTimer = Math.max(m.vulnerableTimer, 2.2);
+        }
+      }
+    }
+
+    if (revealedCount > 0 || shatteredCount > 0) {
+      this.eventBannerText =
+        revealedCount > 0
+          ? 'Сонар сорвал маскировку! Цель уязвима'
+          : 'Сонар развеял миражи над водой!';
+      this.eventBannerTimer = 2.1;
+    }
+  }
+
   public triggerDepthCharge() {
     if (!this.running || this.paused) return;
     if (this.stats.depthCharges <= 0) return;
@@ -924,7 +1113,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     // Tall water geyser splash burst
     this.spawnSplashBurst(this.boatX, this.boatZ, 24, 'spark', 11);
 
-    // Clear nearby enemy projectiles
+    // Clear nearby enemy projectiles & break illusions/cloaks
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
       if (!p.fromPlayer && Math.hypot(p.x - this.boatX, p.z - this.boatZ) <= radius3d) {
@@ -932,8 +1121,20 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
         this.projectiles.splice(i, 1);
       }
     }
+    this.disruptIllusionsAndCloaks(this.boatX, this.boatZ, radius3d, false);
 
-    // Damage & blast nearby monsters
+    // Clear slime hazards in blast radius
+    for (let i = this.hazards.length - 1; i >= 0; i--) {
+      const hz = this.hazards[i];
+      if (hz.kind === 'slime_cloud' && Math.hypot(hz.x - this.boatX, hz.z - this.boatZ) <= radius3d) {
+        this.scene.remove(hz.mesh);
+        hz.mesh.geometry.dispose();
+        hz.mat.dispose();
+        this.hazards.splice(i, 1);
+      }
+    }
+
+    // Damage & blast nearby monsters (ignoring armor via blast shockwave!)
     const blastDamage = Math.round(this.stats.damage * 3.4);
     for (let i = this.monsters.length - 1; i >= 0; i--) {
       const m = this.monsters[i];
@@ -943,6 +1144,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
         const force = m.kind === 'leviathan' ? 9 : 22;
         m.vx += Math.sin(pushYaw) * force;
         m.vz += Math.cos(pushYaw) * force;
+        m.armorActive = false;
         this.damageMonster(i, blastDamage, true);
       }
     }
@@ -1032,6 +1234,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     this.ringGeo.dispose();
     this.ringMat.dispose();
     this.shockwaveMat.dispose();
+    this.electricShockMat.dispose();
     this.pickupAssets.dispose();
 
     this.composer?.dispose();
@@ -1068,6 +1271,22 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
       }
     }
     if (this.overdriveTimer > 0) this.overdriveTimer = Math.max(0, this.overdriveTimer - dt);
+    if (this.stunTimer > 0) this.stunTimer = Math.max(0, this.stunTimer - dt);
+    if (this.sonarCooldownTimer > 0) this.sonarCooldownTimer = Math.max(0, this.sonarCooldownTimer - dt);
+    if (this.disorientTimer > 0) this.disorientTimer = Math.max(0, this.disorientTimer - dt);
+    if (this.hudGlitchTimer > 0) this.hudGlitchTimer = Math.max(0, this.hudGlitchTimer - dt);
+    if (this.timeSlowTimer > 0) this.timeSlowTimer = Math.max(0, this.timeSlowTimer - dt);
+    if (this.poisonTimer > 0) {
+      this.poisonTimer = Math.max(0, this.poisonTimer - dt);
+      this.poisonTickTimer -= dt;
+      if (this.poisonTickTimer <= 0) {
+        this.poisonTickTimer = 0.9;
+        if (this.stats.hp > 1) {
+          this.stats.hp = Math.max(1, this.stats.hp - 2);
+          this.spawnSplashBurst(this.boatX, this.boatZ, 4, 'spark', 4);
+        }
+      }
+    }
     if (this.blastLightTimer > 0) {
       this.blastLightTimer = Math.max(0, this.blastLightTimer - dt);
       this.blastLight.intensity = (this.blastLightTimer / 0.45) * 42;
@@ -1078,6 +1297,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
       if (this.comboTimer <= 0) this.combo = 0;
     }
 
+    this.updateHazards(dt);
     this.updateBoat(dt);
     this.updateSpawning(dt);
     this.updateMonsters(dt);
@@ -1149,8 +1369,13 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     if (this.dashCooldownTimer > 0) this.dashCooldownTimer = Math.max(0, this.dashCooldownTimer - dt);
     if (this.recoil > 0) this.recoil = Math.max(0, this.recoil - dt * 2.8);
 
-    // Convert 2D speed (~315 px/s) to 3D meters/s (~15.5 m/s)
-    const maxSpeed = this.stats.speed / 20;
+    // Convert 2D speed (~315 px/s) to 3D meters/s (~15.5 m/s) with venom / stun / slime / chrono slow
+    const statusMult =
+      (this.stunTimer > 0 ? 0.35 : 1) *
+      (this.poisonTimer > 0 ? 0.75 : 1) *
+      (this.slimeSlowActive ? 0.65 : 1) *
+      (this.timeSlowTimer > 0 ? 0.5 : 1);
+    const maxSpeed = (this.stats.speed / 20) * statusMult;
 
     let ix = this.touchMoveX;
     let iz = this.touchMoveY;
@@ -1158,6 +1383,16 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) iz += 1;
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) ix -= 1;
     if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) ix += 1;
+
+    if (this.disorientTimer > 0 && (Math.abs(ix) > 0.05 || Math.abs(iz) > 0.05)) {
+      const sway = Math.sin(this.worldTime * 7.2) * 0.55;
+      const cos = Math.cos(sway);
+      const sin = Math.sin(sway);
+      const nx = ix * cos - iz * sin;
+      const nz = ix * sin + iz * cos;
+      ix = nx;
+      iz = nz;
+    }
 
     const mag = Math.hypot(ix, iz);
     if (mag > 1) {
@@ -1258,9 +1493,10 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     const waveY = waterHeightAt(this.boatX, this.boatZ, this.worldTime, this.weatherSystem.getWaveAmp());
     this.boatRig.root.position.set(this.boatX, waveY, this.boatZ);
     this.boatRig.hullGroup.rotation.y = this.boatYaw;
-    // Pitch and roll on waves + speed
-    this.boatRig.hullGroup.rotation.x = Math.sin(this.worldTime * 2.2) * 0.045 - (speed / maxSpeed) * 0.06;
-    this.boatRig.hullGroup.rotation.z = Math.cos(this.worldTime * 1.9) * 0.05;
+    // Pitch and roll on waves + speed (+ electric stun tremor)
+    const stunJitter = this.stunTimer > 0 ? Math.sin(this.worldTime * 46) * 0.08 : 0;
+    this.boatRig.hullGroup.rotation.x = Math.sin(this.worldTime * 2.2) * 0.045 - (speed / Math.max(1, maxSpeed)) * 0.06;
+    this.boatRig.hullGroup.rotation.z = Math.cos(this.worldTime * 1.9) * 0.05 + stunJitter;
     this.boatRig.turretGroup.rotation.y = this.aimYaw;
     this.boatRig.harpoonRecoilGroup.position.z = 0.3 - this.recoil;
     this.boatRig.propeller.rotation.z += dt * (8 + speed * 2.4);
@@ -1450,6 +1686,46 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
       damage = 8;
       scoreValue = 45;
       coinValue = 2;
+    } else if (kind === 'glass_ghost') {
+      name = 'Стеклянный Призрак';
+      radius = 1.05;
+      hp = 66;
+      speed = 8.6;
+      damage = 16;
+      scoreValue = 175;
+      coinValue = 7;
+    } else if (kind === 'mirage_ray') {
+      name = 'Скат Мираж';
+      radius = 1.35;
+      hp = 96;
+      speed = 8.0;
+      damage = 18;
+      scoreValue = 210;
+      coinValue = 8;
+    } else if (kind === 'chrono_morok') {
+      name = 'Хроно-Морок';
+      radius = 1.22;
+      hp = 135;
+      speed = 5.4;
+      damage = 22;
+      scoreValue = 245;
+      coinValue = 10;
+    } else if (kind === 'sky_jelly') {
+      name = 'Медуза Небоплав';
+      radius = 1.12;
+      hp = 88;
+      speed = 6.2;
+      damage = 18;
+      scoreValue = 195;
+      coinValue = 7;
+    } else if (kind === 'turtle_rift') {
+      name = 'Черепахор Разлом';
+      radius = 1.55;
+      hp = 190;
+      speed = 4.2;
+      damage = 26;
+      scoreValue = 260;
+      coinValue = 11;
     } else if (kind === 'croc_gena') {
       name = 'Крокодил Гена';
       radius = 1.35;
@@ -1488,7 +1764,8 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     const yaw = Math.atan2(this.boatX - sx, this.boatZ - sz);
     const spawnWy = waterHeightAt(sx, sz, this.worldTime, this.weatherSystem.getWaveAmp());
     const isCroc = kind === 'croc_gena';
-    rig.root.position.set(sx, spawnWy + (isCroc ? 0.35 : 0), sz);
+    const isSky = kind === 'sky_jelly';
+    rig.root.position.set(sx, spawnWy + (isCroc ? 0.35 : isSky ? 1.15 : 0), sz);
     rig.root.rotation.y = yaw;
     this.scene.add(rig.root);
 
@@ -1516,10 +1793,14 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
       isLunging: false,
       lungeTimer: 0,
       isJumping: isCroc,
-      jumpY: isCroc ? 0.35 : 0,
+      jumpY: isCroc ? 0.35 : isSky ? 1.15 : 0,
       jumpVy: isCroc ? 9.2 : 0,
       jumpCooldown: isCroc ? 3.2 + Math.random() * 1.5 : 0,
       shootCooldown: 1.8 + Math.random() * 1.4,
+      vulnerableTimer: 0,
+      armorActive: kind === 'karas' || kind === 'turtle_rift',
+      isCloaked: false,
+      specialCooldown: 2.0 + Math.random() * 1.6,
       rig,
     });
 
@@ -1528,9 +1809,14 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
   }
 
   private updateMonsters(dt: number) {
+    const insul = this.getInsulationMult();
+
     for (let i = this.monsters.length - 1; i >= 0; i--) {
       const m = this.monsters[i];
       m.swimPhase += dt * (m.isLunging ? 18 : 8.5);
+      if (m.vulnerableTimer > 0) m.vulnerableTimer = Math.max(0, m.vulnerableTimer - dt);
+      if (m.specialCooldown > 0) m.specialCooldown = Math.max(0, m.specialCooldown - dt);
+
       if (m.hitFlash > 0) {
         m.hitFlash = Math.max(0, m.hitFlash - dt);
         m.rig.bodyMat.emissive.setHex(m.hitFlash > 0 ? 0xffffff : 0x000000);
@@ -1543,11 +1829,13 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
       const yawToBoat = Math.atan2(toX, toZ);
 
       if (m.kind === 'pike') {
+        // Щука-стрела: «Пространственный разрез» (клиновый гидроудар + 3 сек слабости после рывка)
         if (m.isLunging) {
           m.lungeTimer -= dt;
           if (m.lungeTimer <= 0) {
             m.isLunging = false;
-            m.stateTimer = 1.6 + Math.random() * 0.9;
+            m.vulnerableTimer = 3.0;
+            m.stateTimer = 2.8 + Math.random() * 0.8;
           }
         } else if (m.telegraphTimer > 0) {
           m.telegraphTimer -= dt;
@@ -1558,25 +1846,37 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
           if (m.telegraphTimer <= 0) {
             if (m.rig.telegraphLine) m.rig.telegraphLine.visible = false;
             m.isLunging = true;
-            m.lungeTimer = 0.42;
+            m.lungeTimer = 0.44;
             const lungeSpd = m.speed * 2.85;
             m.vx = Math.sin(m.telegraphYaw) * lungeSpd;
             m.vz = Math.cos(m.telegraphYaw) * lungeSpd;
+            this.spawnHazard(
+              'hydro_wedge',
+              m.x + Math.sin(m.telegraphYaw) * 1.4,
+              m.z + Math.cos(m.telegraphYaw) * 1.4,
+              1.65,
+              1.1,
+              Math.sin(m.telegraphYaw) * 18,
+              Math.cos(m.telegraphYaw) * 18
+            );
             soundEngine.playMonsterLunge(false);
           }
         } else {
           if (m.rig.telegraphLine) m.rig.telegraphLine.visible = false;
           m.stateTimer -= dt;
-          if (d < 17 && m.stateTimer <= 0) {
-            m.telegraphTimer = 0.55;
+          const turnRate = m.vulnerableTimer > 0 ? 1.6 : 5.0;
+          const spdMult = m.vulnerableTimer > 0 ? 0.65 : 1.0;
+          if (d < 17 && m.stateTimer <= 0 && m.vulnerableTimer <= 0) {
+            m.telegraphTimer = 0.58;
             m.telegraphYaw = yawToBoat;
           } else {
-            m.yaw = lerpAngle(m.yaw, yawToBoat, dt * 5);
-            m.vx += (Math.sin(m.yaw) * m.speed - m.vx) * Math.min(1, dt * 4);
-            m.vz += (Math.cos(m.yaw) * m.speed - m.vz) * Math.min(1, dt * 4);
+            m.yaw = lerpAngle(m.yaw, yawToBoat, dt * turnRate);
+            m.vx += (Math.sin(m.yaw) * m.speed * spdMult - m.vx) * Math.min(1, dt * 4);
+            m.vz += (Math.cos(m.yaw) * m.speed * spdMult - m.vz) * Math.min(1, dt * 4);
           }
         }
       } else if (m.kind === 'eel') {
+        // Угорь-искра: «Электромагнитный кокон» + электризация слизи Линя!
         let moveYaw = yawToBoat;
         if (d < 11) moveYaw = yawToBoat + Math.PI + (m.id % 2 === 0 ? 0.85 : -0.85);
         else if (d < 17) moveYaw = yawToBoat + (Math.PI / 2) * (m.id % 2 === 0 ? 1 : -1);
@@ -1586,9 +1886,59 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
         m.vx += (Math.sin(moveYaw + wiggle) * m.speed - m.vx) * Math.min(1, dt * 4);
         m.vz += (Math.cos(moveYaw + wiggle) * m.speed - m.vz) * Math.min(1, dt * 4);
 
+        m.stateTimer -= dt;
+        if (m.telegraphTimer > 0) {
+          m.telegraphTimer -= dt;
+          if (m.rig.electricRing) {
+            m.rig.electricRing.visible = true;
+            m.rig.electricRing.scale.setScalar(1.15 + Math.sin(this.worldTime * 36) * 0.35);
+          }
+          if (m.telegraphTimer <= 0) {
+            if (m.rig.electricRing) m.rig.electricRing.visible = false;
+            this.spawnElectricShockwave(m.x, m.z, 1.0, 9.0, 0.42);
+            this.spawnSplashBurst(m.x, m.z, 10, 'spark', 7.5);
+            soundEngine.playElectricZap();
+            m.stateTimer = 4.6 + Math.random() * 1.2;
+            m.vulnerableTimer = 2.0;
+
+            // Electrify nearby slime clouds from Lin!
+            let electrifiedAny = false;
+            for (const hz of this.hazards) {
+              if (hz.kind === 'slime_cloud' && !hz.electrified && Math.hypot(hz.x - m.x, hz.z - m.z) <= 11.5) {
+                hz.electrified = true;
+                hz.life = Math.max(hz.life, 4.5);
+                hz.mat.color.setHex(0x00e5ff);
+                electrifiedAny = true;
+              }
+            }
+
+            if (d <= 8.6) {
+              const knockYaw = Math.atan2(this.boatX - m.x, this.boatZ - m.z);
+              this.stunTimer = Math.max(this.stunTimer, 1.45 * insul);
+              this.hudGlitchTimer = Math.max(this.hudGlitchTimer, 2.2 * insul);
+              if (this.invulnTimer <= 0) {
+                this.hurtPlayer(Math.round(m.damage * 0.85), knockYaw, 1.4 * insul);
+              } else {
+                this.boatVx += Math.sin(knockYaw) * 14 * insul;
+                this.boatVz += Math.cos(knockYaw) * 14 * insul;
+              }
+              this.eventBannerText = 'Угорь-искра: ЭМ-разряд и помехи приборов!';
+              this.eventBannerTimer = 2.0;
+            } else if (electrifiedAny) {
+              this.eventBannerText = 'Угорь наэлектризовал слизь Линя!';
+              this.eventBannerTimer = 1.9;
+            }
+          }
+        } else {
+          if (m.rig.electricRing) m.rig.electricRing.visible = false;
+          if (d < 8.6 && m.stateTimer <= 0) {
+            m.telegraphTimer = 0.46;
+          }
+        }
+
         m.shootCooldown -= dt;
         if (m.shootCooldown <= 0 && d < 26) {
-          m.shootCooldown = 2.2 + Math.random() * 0.9;
+          m.shootCooldown = 2.4 + Math.random() * 0.9;
           this.spawnEnemyOrb(m.x, m.z, yawToBoat, 14.5, m.damage);
           soundEngine.playMonsterShot(false, false);
         }
@@ -1600,6 +1950,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
           if (m.lungeTimer <= 0) {
             m.isLunging = false;
             m.stateTimer = 2.8;
+            m.vulnerableTimer = 2.2;
           }
         } else if (m.telegraphTimer > 0) {
           m.telegraphTimer -= dt;
@@ -1648,6 +1999,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
             m.jumpY = 0;
             m.jumpVy = 0;
             m.isJumping = false;
+            m.vulnerableTimer = 1.6;
             const landWy = waterHeightAt(m.x, m.z, this.worldTime, this.weatherSystem.getWaveAmp());
             this.splashSystem.emitSplash(m.x, m.z, 1.85, m.vx * 0.4, m.vz * 0.4, landWy);
             soundEngine.playMonsterSpawn('pike');
@@ -1675,58 +2027,105 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
           soundEngine.playMonsterShot(true, false);
         }
       } else if (m.kind === 'ersh') {
-        // Ёрш Передрёш: speeds up when damaged and performs sharp spiked lunges
-        const frenzy = m.hp < m.maxHp * 0.65 ? 1.32 : 1.0;
+        // Ёрш Передрёш: «Иглы резонанса» — вибрация шипов + сбой управления 4с (во время вибрации почти неподвижен)
         m.stateTimer -= dt;
-        if (m.isLunging) {
+        if (m.telegraphTimer > 0) {
+          m.telegraphTimer -= dt;
+          m.vx *= Math.exp(-10 * dt);
+          m.vz *= Math.exp(-10 * dt);
+          if (m.rig.electricRing) {
+            m.rig.electricRing.visible = true;
+            m.rig.electricRing.scale.setScalar(1.0 + Math.sin(this.worldTime * 42) * 0.3);
+          }
+          if (m.telegraphTimer <= 0) {
+            if (m.rig.electricRing) m.rig.electricRing.visible = false;
+            soundEngine.playResonanceHum();
+            this.spawnRing(m.x, m.z, 1.0, 9.5, 0.5, true);
+            m.stateTimer = 4.6 + Math.random() * 1.2;
+            m.vulnerableTimer = 2.0;
+            if (d <= 9.5) {
+              this.screenShake = Math.max(this.screenShake, 0.55);
+              this.disorientTimer = Math.max(this.disorientTimer, 4.0 * insul);
+              this.eventBannerText = 'Ёрш Передрёш: иглы резонанса сбили курс!';
+              this.eventBannerTimer = 2.1;
+            }
+          }
+        } else if (m.isLunging) {
           m.lungeTimer -= dt;
           if (m.lungeTimer <= 0) {
             m.isLunging = false;
-            m.stateTimer = 1.7 + Math.random() * 0.8;
+            m.stateTimer = 2.0 + Math.random() * 0.8;
           }
-        } else if (m.stateTimer <= 0 && d < 13) {
+        } else if (m.stateTimer <= 0 && d < 9.2) {
+          m.telegraphTimer = 0.85;
+        } else if (m.specialCooldown <= 0 && d < 14) {
           m.isLunging = true;
           m.lungeTimer = 0.36;
+          m.specialCooldown = 3.2;
           m.yaw = yawToBoat;
-          const dashSpd = m.speed * 2.25 * frenzy;
+          const dashSpd = m.speed * 2.25;
           m.vx = Math.sin(m.yaw) * dashSpd;
           m.vz = Math.cos(m.yaw) * dashSpd;
           soundEngine.playMonsterLunge(false);
         } else {
+          if (m.rig.electricRing) m.rig.electricRing.visible = false;
           m.yaw = lerpAngle(m.yaw, yawToBoat, dt * 6);
-          m.vx += (Math.sin(m.yaw) * m.speed * frenzy - m.vx) * Math.min(1, dt * 4.5);
-          m.vz += (Math.cos(m.yaw) * m.speed * frenzy - m.vz) * Math.min(1, dt * 4.5);
+          m.vx += (Math.sin(m.yaw) * m.speed - m.vx) * Math.min(1, dt * 4.5);
+          m.vz += (Math.cos(m.yaw) * m.speed - m.vz) * Math.min(1, dt * 4.5);
         }
       } else if (m.kind === 'lin') {
-        // Линь Жминь: steady armored tank firing toxic swamp slime orbs
+        // Линь Жминь: «Живая слизь» — сбрасывает облако слизи (-35% скорости лодки) и становится уязвимым
         let moveYaw = yawToBoat;
         if (d < 8.5) moveYaw = yawToBoat + Math.PI * 0.72 * (m.id % 2 === 0 ? 1 : -1);
+        const speedMult = m.vulnerableTimer > 0 ? 1.35 : 1.0;
         m.yaw = lerpAngle(m.yaw, yawToBoat, dt * 4);
-        m.vx += (Math.sin(moveYaw) * m.speed - m.vx) * Math.min(1, dt * 3.2);
-        m.vz += (Math.cos(moveYaw) * m.speed - m.vz) * Math.min(1, dt * 3.2);
+        m.vx += (Math.sin(moveYaw) * m.speed * speedMult - m.vx) * Math.min(1, dt * 3.2);
+        m.vz += (Math.cos(moveYaw) * m.speed * speedMult - m.vz) * Math.min(1, dt * 3.2);
+
+        if (m.specialCooldown <= 0 && d < 18) {
+          m.specialCooldown = 5.4 + Math.random() * 1.4;
+          m.vulnerableTimer = 3.2;
+          this.spawnHazard('slime_cloud', m.x, m.z, 4.4, 7.5);
+          const escapeYaw = yawToBoat + Math.PI * 0.85;
+          m.vx = Math.sin(escapeYaw) * m.speed * 2.1;
+          m.vz = Math.cos(escapeYaw) * m.speed * 2.1;
+        }
 
         m.shootCooldown -= dt;
         if (m.shootCooldown <= 0 && d < 25) {
           m.shootCooldown = 2.45 + Math.random() * 0.8;
-          this.spawnEnemyOrb(m.x, m.z, yawToBoat, 12.2, m.damage, false, true);
+          this.spawnEnemyOrb(m.x, m.z, yawToBoat, 12.2, m.damage, false, true, true);
           soundEngine.playMonsterShot(false, false);
         }
       } else if (m.kind === 'peskar') {
-        // Пескарь Натаскарь: swift sinusoidal flanking weave around islands
+        // Пескарь Натаскарь: «Квантовая линька» — телепорт в сторону при опасности/попадании
+        if ((m.hitFlash > 0.08 || d < 5.6) && m.specialCooldown <= 0) {
+          m.specialCooldown = 4.2 + Math.random();
+          m.vulnerableTimer = 1.5;
+          this.spawnSplashBurst(m.x, m.z, 8, 'spark', 6.5);
+          soundEngine.playQuantumBlink();
+          const sideYaw = yawToBoat + (m.id % 2 === 0 ? 1 : -1) * (Math.PI / 2);
+          m.x = clamp(m.x + Math.sin(sideYaw) * 5.2, -ARENA_HALF_W + m.radius, ARENA_HALF_W - m.radius);
+          m.z = clamp(m.z + Math.cos(sideYaw) * 5.2, -ARENA_HALF_H + m.radius, ARENA_HALF_H - m.radius);
+          this.spawnSplashBurst(m.x, m.z, 8, 'spark', 5.5);
+        }
         const weave = Math.sin(m.swimPhase * 0.9 + m.id) * 0.72;
         m.yaw = lerpAngle(m.yaw, yawToBoat + weave, dt * 8);
         m.vx += (Math.sin(m.yaw) * m.speed - m.vx) * Math.min(1, dt * 5.2);
         m.vz += (Math.cos(m.yaw) * m.speed - m.vz) * Math.min(1, dt * 5.2);
       } else if (m.kind === 'karas') {
-        // Карась Вырубась: heavy orange-line telegraphed forehead ram
+        // Карась Вырубась: «Живая броня» спереди; уязвимое брюшко открывается на 2.4с после тарана
         if (m.isLunging) {
           m.lungeTimer -= dt;
           if (m.lungeTimer <= 0) {
             m.isLunging = false;
-            m.stateTimer = 2.1 + Math.random() * 0.8;
+            m.armorActive = false;
+            m.vulnerableTimer = 2.4;
+            m.stateTimer = 2.8 + Math.random() * 0.8;
           }
         } else if (m.telegraphTimer > 0) {
           m.telegraphTimer -= dt;
+          m.armorActive = true;
           m.vx *= Math.exp(-7 * dt);
           m.vz *= Math.exp(-7 * dt);
           m.yaw = lerpAngle(m.yaw, m.telegraphYaw, dt * 10);
@@ -1734,7 +2133,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
           if (m.telegraphTimer <= 0) {
             if (m.rig.telegraphLine) m.rig.telegraphLine.visible = false;
             m.isLunging = true;
-            m.lungeTimer = 0.52;
+            m.lungeTimer = 0.54;
             const ramSpd = m.speed * 2.95;
             m.vx = Math.sin(m.telegraphYaw) * ramSpd;
             m.vz = Math.cos(m.telegraphYaw) * ramSpd;
@@ -1742,6 +2141,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
           }
         } else {
           if (m.rig.telegraphLine) m.rig.telegraphLine.visible = false;
+          if (m.vulnerableTimer <= 0) m.armorActive = true;
           m.stateTimer -= dt;
           if (d < 16 && m.stateTimer <= 0) {
             m.telegraphTimer = 0.62;
@@ -1752,11 +2152,191 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
             m.vz += (Math.cos(m.yaw) * m.speed - m.vz) * Math.min(1, dt * 3.8);
           }
         }
-      } else {
+      } else if (m.kind === 'catfish') {
+        // Озёрный сом: «Водяной водоворот» — затягивает лодку к центру (и в слизь Линя!)
+        m.stateTimer -= dt;
+        if (m.telegraphTimer > 0) {
+          m.telegraphTimer -= dt;
+          m.vx *= Math.exp(-5 * dt);
+          m.vz *= Math.exp(-5 * dt);
+          m.yaw = lerpAngle(m.yaw, yawToBoat, dt * 3);
+          if (m.telegraphTimer <= 0) {
+            this.spawnHazard('vortex', m.x, m.z, 7.2, 4.0);
+            soundEngine.playVortexPull();
+            m.stateTimer = 6.2 + Math.random() * 1.4;
+            m.vulnerableTimer = 2.5;
+          }
+        } else {
+          const spdMult = m.vulnerableTimer > 0 ? 0.65 : 1.0;
+          m.yaw = lerpAngle(m.yaw, yawToBoat, dt * 3.8);
+          m.vx += (Math.sin(m.yaw) * m.speed * spdMult - m.vx) * Math.min(1, dt * 3.5);
+          m.vz += (Math.cos(m.yaw) * m.speed * spdMult - m.vz) * Math.min(1, dt * 3.5);
+          if (d < 14 && m.stateTimer <= 0) {
+            m.telegraphTimer = 0.85;
+          }
+        }
+      } else if (m.kind === 'puffer') {
+        // Иглобрюх-мина: раздувается с замедлением хода, открывая броню шипов
+        const inflated = m.vulnerableTimer <= 0 && d < 12;
+        m.armorActive = inflated;
+        const targetScale = inflated ? 1.42 : 1.0;
+        const cs = m.rig.root.scale.x;
+        const ns = cs + (targetScale - cs) * Math.min(1, dt * 5);
+        m.rig.root.scale.setScalar(ns);
         m.yaw = lerpAngle(m.yaw, yawToBoat, dt * 5);
-        const spdMult = m.kind === 'puffer' && d < 8 ? 1.25 : 1;
+        const spdMult = inflated ? 0.55 : 1.05;
         m.vx += (Math.sin(m.yaw) * m.speed * spdMult - m.vx) * Math.min(1, dt * 4);
         m.vz += (Math.cos(m.yaw) * m.speed * spdMult - m.vz) * Math.min(1, dt * 4);
+      } else if (m.kind === 'glass_ghost') {
+        // Стеклянный Призрак: «Иллюзорная невидимость» — уходит в камуфляж, оставляя водяную приманку
+        m.stateTimer -= dt;
+        if (m.isCloaked) {
+          m.specialCooldown -= dt;
+          if (m.specialCooldown <= 0) {
+            m.specialCooldown = 0.85;
+            this.spawnRing(m.x, m.z, 0.4, 1.8, 0.55, false);
+          }
+          if (m.stateTimer <= 0) {
+            m.isCloaked = false;
+            m.vulnerableTimer = 2.4;
+            m.stateTimer = 4.2 + Math.random();
+          }
+        } else if (m.stateTimer <= 0 && m.vulnerableTimer <= 0 && d < 22) {
+          m.isCloaked = true;
+          m.stateTimer = 4.2;
+          m.specialCooldown = 0.7;
+          this.spawnHazard('decoy_ghost', m.x, m.z, 1.4, 3.8);
+          soundEngine.playQuantumBlink();
+        }
+        m.yaw = lerpAngle(m.yaw, yawToBoat, dt * 6);
+        m.vx += (Math.sin(m.yaw) * m.speed - m.vx) * Math.min(1, dt * 4.5);
+        m.vz += (Math.cos(m.yaw) * m.speed - m.vz) * Math.min(1, dt * 4.5);
+      } else if (m.kind === 'mirage_ray') {
+        // Скат Мираж: «Иллюзорные двойники» — кружит и ставит 2 голографических фантома
+        let moveYaw = yawToBoat;
+        if (d < 12) moveYaw = yawToBoat + (Math.PI / 2) * (m.id % 2 === 0 ? 1 : -1);
+        m.yaw = lerpAngle(m.yaw, moveYaw, dt * 5);
+        m.vx += (Math.sin(m.yaw) * m.speed - m.vx) * Math.min(1, dt * 4.2);
+        m.vz += (Math.cos(m.yaw) * m.speed - m.vz) * Math.min(1, dt * 4.2);
+
+        if (m.specialCooldown <= 0 && d < 22) {
+          m.specialCooldown = 6.2 + Math.random() * 1.4;
+          soundEngine.playQuantumBlink();
+          for (const side of [-1, 1]) {
+            const ang = yawToBoat + side * 0.9;
+            const cx = clamp(m.x + Math.sin(ang) * 4.5, -ARENA_HALF_W + 2, ARENA_HALF_W - 2);
+            const cz = clamp(m.z + Math.cos(ang) * 4.5, -ARENA_HALF_H + 2, ARENA_HALF_H - 2);
+            this.spawnHazard('mirage_clone', cx, cz, 1.5, 5.2);
+          }
+        }
+        m.shootCooldown -= dt;
+        if (m.shootCooldown <= 0 && d < 24) {
+          m.shootCooldown = 2.6 + Math.random();
+          this.spawnEnemyOrb(m.x, m.z, yawToBoat, 13.5, m.damage);
+          soundEngine.playMonsterShot(false, false);
+        }
+      } else if (m.kind === 'chrono_morok') {
+        // Хроно-Морок: «Временной пузырь» — замедляет лодку и гарпуны внутри сферы, затем 2.8с уязвим
+        m.stateTimer -= dt;
+        if (m.telegraphTimer > 0) {
+          m.telegraphTimer -= dt;
+          if (m.rig.auraDome) m.rig.auraDome.visible = true;
+          m.vx *= Math.exp(-6 * dt);
+          m.vz *= Math.exp(-6 * dt);
+          if (m.telegraphTimer <= 0) {
+            if (m.rig.auraDome) m.rig.auraDome.visible = false;
+            this.spawnHazard('chrono_bubble', m.x, m.z, 6.4, 3.2);
+            soundEngine.playTimeWarp();
+            m.stateTimer = 6.0 + Math.random() * 1.4;
+            m.vulnerableTimer = 2.8;
+          }
+        } else {
+          if (m.rig.auraDome) m.rig.auraDome.visible = false;
+          m.yaw = lerpAngle(m.yaw, yawToBoat, dt * 4);
+          m.vx += (Math.sin(m.yaw) * m.speed - m.vx) * Math.min(1, dt * 3.5);
+          m.vz += (Math.cos(m.yaw) * m.speed - m.vz) * Math.min(1, dt * 3.5);
+          if (d < 15 && m.stateTimer <= 0) {
+            m.telegraphTimer = 0.8;
+          }
+        }
+      } else if (m.kind === 'sky_jelly') {
+        // Медуза Небоплав: «Грозовой парящий купол» — парит над водой и бьёт молнией, потом опускается (уязвима)
+        const targetH = m.vulnerableTimer > 0 ? 0.28 : 1.25 + Math.sin(m.swimPhase * 0.45) * 0.22;
+        m.jumpY += (targetH - m.jumpY) * Math.min(1, dt * 4.5);
+        m.yaw = lerpAngle(m.yaw, yawToBoat, dt * 4);
+        m.vx += (Math.sin(m.yaw) * m.speed - m.vx) * Math.min(1, dt * 3.5);
+        m.vz += (Math.cos(m.yaw) * m.speed - m.vz) * Math.min(1, dt * 3.5);
+
+        m.stateTimer -= dt;
+        if (m.telegraphTimer > 0) {
+          m.telegraphTimer -= dt;
+          if (m.rig.electricRing) {
+            m.rig.electricRing.visible = true;
+            m.rig.electricRing.scale.setScalar(1.2 + Math.sin(this.worldTime * 34) * 0.25);
+          }
+          if (m.telegraphTimer <= 0) {
+            if (m.rig.electricRing) m.rig.electricRing.visible = false;
+            this.spawnElectricShockwave(m.x, m.z, 0.8, 6.8, 0.42);
+            soundEngine.playElectricZap();
+            m.stateTimer = 4.4 + Math.random();
+            m.vulnerableTimer = 2.6;
+            if (d <= 6.8) {
+              const knockYaw = Math.atan2(this.boatX - m.x, this.boatZ - m.z);
+              this.stunTimer = Math.max(this.stunTimer, 1.0 * insul);
+              if (this.invulnTimer <= 0) {
+                this.hurtPlayer(m.damage, knockYaw, 1.1 * insul);
+              }
+            }
+          }
+        } else {
+          if (m.rig.electricRing) m.rig.electricRing.visible = false;
+          if (d < 8.5 && m.stateTimer <= 0) {
+            m.telegraphTimer = 0.65;
+          }
+        }
+      } else if (m.kind === 'turtle_rift') {
+        // Черепахор Разлом: «Смыкание рифового панциря» — отражает выстрелы спереди, после ударной волны раскрывается
+        m.stateTimer -= dt;
+        if (m.telegraphTimer > 0) {
+          m.telegraphTimer -= dt;
+          m.armorActive = true;
+          m.vx *= Math.exp(-8 * dt);
+          m.vz *= Math.exp(-8 * dt);
+          if (m.rig.electricRing) {
+            m.rig.electricRing.visible = true;
+            m.rig.electricRing.scale.setScalar(1.1 + Math.sin(this.worldTime * 30) * 0.25);
+          }
+          if (m.telegraphTimer <= 0) {
+            if (m.rig.electricRing) m.rig.electricRing.visible = false;
+            this.spawnRing(m.x, m.z, 1.2, 8.5, 0.48, true);
+            this.spawnSplashBurst(m.x, m.z, 12, 'splash', 7);
+            soundEngine.playMonsterLunge(true);
+            m.armorActive = false;
+            m.vulnerableTimer = 3.2;
+            m.stateTimer = 5.4 + Math.random();
+            if (d <= 8.5) {
+              const knockYaw = Math.atan2(this.boatX - m.x, this.boatZ - m.z);
+              this.boatVx += Math.sin(knockYaw) * 20 * insul;
+              this.boatVz += Math.cos(knockYaw) * 20 * insul;
+              if (this.invulnTimer <= 0) {
+                this.hurtPlayer(Math.round(m.damage * 0.8), knockYaw, 1.6 * insul);
+              }
+            }
+          }
+        } else {
+          if (m.rig.electricRing) m.rig.electricRing.visible = false;
+          if (m.vulnerableTimer <= 0) m.armorActive = true;
+          m.yaw = lerpAngle(m.yaw, yawToBoat, dt * 3);
+          m.vx += (Math.sin(m.yaw) * m.speed - m.vx) * Math.min(1, dt * 3);
+          m.vz += (Math.cos(m.yaw) * m.speed - m.vz) * Math.min(1, dt * 3);
+          if (d < 8.5 && m.stateTimer <= 0 && m.vulnerableTimer <= 0) {
+            m.telegraphTimer = 0.78;
+          }
+        }
+      } else {
+        m.yaw = lerpAngle(m.yaw, yawToBoat, dt * 5);
+        m.vx += (Math.sin(m.yaw) * m.speed - m.vx) * Math.min(1, dt * 4);
+        m.vz += (Math.cos(m.yaw) * m.speed - m.vz) * Math.min(1, dt * 4);
       }
 
       // Soft separation
@@ -1791,7 +2371,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
         }
       }
 
-      // Animate 3D articulated mesh on water surface (and jump arc for Crocodile Gena)
+      // Animate 3D articulated mesh on water surface (and jump arc for Crocodile Gena / hover for Sky Jelly)
       const wy = waterHeightAt(m.x, m.z, this.worldTime, this.weatherSystem.getWaveAmp());
       m.rig.root.position.set(m.x, wy + m.jumpY, m.z);
       m.rig.root.rotation.y = m.yaw;
@@ -1802,15 +2382,54 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
       }
       if (m.rig.segments.length > 0) {
         m.rig.segments.forEach((seg, idx) => {
-          seg.position.x = Math.sin(m.swimPhase - idx * 0.65) * (m.kind === 'leviathan' ? idx * 0.16 : idx * 0.07);
+          if (m.kind === 'sky_jelly') {
+            seg.rotation.x = Math.sin(m.swimPhase * 0.6 + idx * 0.9) * 0.25;
+            seg.rotation.z = Math.cos(m.swimPhase * 0.5 + idx * 0.7) * 0.18;
+          } else {
+            seg.position.x = Math.sin(m.swimPhase - idx * 0.65) * (m.kind === 'leviathan' ? idx * 0.16 : idx * 0.07);
+          }
         });
       }
+      if (m.rig.chronoRings && m.rig.chronoRings.length > 0) {
+        m.rig.chronoRings.forEach((ring, idx) => {
+          ring.rotation.z += dt * (idx === 0 ? 1.8 : -2.4);
+          ring.rotation.x += dt * (idx === 0 ? 0.9 : -1.1);
+        });
+      }
+      if (m.rig.armorShield) {
+        m.rig.armorShield.visible = m.armorActive;
+      }
+      if (m.rig.cloakMats && m.rig.cloakMats.length > 0) {
+        const targetOp = m.isCloaked ? 0.14 : m.kind === 'glass_ghost' ? 0.46 : 0.7;
+        for (const mat of m.rig.cloakMats) {
+          if ('opacity' in mat) {
+            (mat as THREE.MeshStandardMaterial).opacity = targetOp;
+          }
+        }
+      }
 
-      // Collision with Sasha's boat
+      // Collision with Sasha's boat (including thorny fin-ray pricks & venomous glands)
       if (Math.hypot(m.x - this.boatX, m.z - this.boatZ) < m.radius + this.boatRadius * 0.85) {
         if (this.invulnTimer <= 0) {
           const knockYaw = Math.atan2(this.boatX - m.x, this.boatZ - m.z);
-          this.hurtPlayer(m.damage, knockYaw, m.kind === 'karas' ? 1.8 : 1.0);
+          const hasSpines = m.kind === 'ersh' || m.kind === 'puffer' || m.kind === 'karas';
+          const isVenomous = m.kind === 'puffer' || m.kind === 'ersh';
+          const knockMult = m.kind === 'karas' || m.kind === 'turtle_rift' ? 1.75 : m.kind === 'ersh' ? 1.35 : 1.0;
+
+          this.hurtPlayer(m.damage, knockYaw, knockMult * insul);
+          if (hasSpines) {
+            soundEngine.playSpinePrick();
+          }
+          if (isVenomous) {
+            this.poisonTimer = Math.max(this.poisonTimer, 3.2);
+            this.poisonTickTimer = Math.max(this.poisonTickTimer, 0.9);
+            soundEngine.playPoisonHit();
+            this.eventBannerText =
+              m.kind === 'puffer'
+                ? 'Ядовитые шипы Иглобрюха! 1 Бульба или Чеснок снимут яд'
+                : 'Укол ядовитых шипов Ерша! Катер отравлен';
+            this.eventBannerTimer = 2.0;
+          }
         }
         const pushYaw = Math.atan2(m.x - this.boatX, m.z - this.boatZ);
         m.vx = Math.sin(pushYaw) * 10;
@@ -1826,7 +2445,8 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     speed: number,
     damage: number,
     isBitcoin = false,
-    isSlime = false
+    isSlime = false,
+    isVenomous = false
   ) {
     const mesh: THREE.Object3D = isBitcoin
       ? buildBitcoinProjectileMesh(this.pickupAssets)
@@ -1852,6 +2472,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
       life: 2.8,
       isCrit: false,
       isBitcoin,
+      isVenomous,
       pierce: 1,
       hitIds: [],
       mesh,
@@ -1860,12 +2481,37 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
 
   private updateProjectiles(dt: number) {
     const waveAmp = this.weatherSystem.getWaveAmp();
+    const leviathan = this.monsters.find((m) => m.kind === 'leviathan');
+
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
-      p.x += p.vx * dt;
-      p.z += p.vz * dt;
-      p.vy -= p.gravity * dt;
-      p.y += p.vy * dt;
+      let stepMult = 1;
+      if (p.fromPlayer) {
+        for (const hz of this.hazards) {
+          if (hz.kind === 'chrono_bubble' && Math.hypot(p.x - hz.x, p.z - hz.z) <= hz.radius) {
+            stepMult = 0.52;
+            break;
+          }
+        }
+        if (leviathan) {
+          const ld = Math.hypot(leviathan.x - p.x, leviathan.z - p.z);
+          if (ld < 7.2 && ld > 0.5) {
+            // Leviathan's magnetic field slightly curves non-crit harpoons
+            const steer = (p.isCrit ? 0.8 : 2.2) * dt;
+            const perpX = -(leviathan.z - p.z) / ld;
+            const perpZ = (leviathan.x - p.x) / ld;
+            p.vx += perpX * steer * 6;
+            p.vz += perpZ * steer * 6;
+            p.yaw = Math.atan2(p.vx, p.vz);
+            p.mesh.rotation.y = p.yaw;
+          }
+        }
+      }
+
+      p.x += p.vx * dt * stepMult;
+      p.z += p.vz * dt * stepMult;
+      p.vy -= p.gravity * dt * stepMult;
+      p.y += p.vy * dt * stepMult;
       p.life -= dt;
       p.mesh.position.set(p.x, p.y, p.z);
       if (p.isBitcoin) {
@@ -1913,6 +2559,23 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
           if (p.hitIds.includes(m.id)) continue;
           if (Math.hypot(p.x - m.x, p.z - m.z) <= m.radius + p.radius) {
             p.hitIds.push(m.id);
+
+            // Frontal armor deflection for Karas & Turtle Rift (pierced by crits, flank/rear hits, or vulnerable window)
+            if (m.armorActive && !p.isCrit && m.vulnerableTimer <= 0) {
+              const pLen = Math.hypot(p.vx, p.vz) || 1;
+              const hitDot = (p.vx / pLen) * Math.sin(m.yaw) + (p.vz / pLen) * Math.cos(m.yaw);
+              if (hitDot < -0.25) {
+                p.vx = -p.vx * 0.72 + (Math.random() - 0.5) * 8;
+                p.vz = -p.vz * 0.72 + (Math.random() - 0.5) * 8;
+                p.yaw = Math.atan2(p.vx, p.vz);
+                p.mesh.rotation.y = p.yaw;
+                p.damage = Math.max(4, Math.round(p.damage * 0.2));
+                soundEngine.playArmorRicochet();
+                this.spawnSplashBurst(m.x, m.z, 5, 'spark', 5.5);
+                continue;
+              }
+            }
+
             const kb = m.kind === 'leviathan' ? 2.2 : 7 + this.upgradeLevels.heavy_harpoon * 1.4;
             m.vx += Math.sin(p.yaw) * kb;
             m.vz += Math.cos(p.yaw) * kb;
@@ -1931,6 +2594,13 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
         if (Math.hypot(p.x - this.boatX, p.z - this.boatZ) <= this.boatRadius * 0.85 + p.radius) {
           if (this.invulnTimer <= 0) {
             this.hurtPlayer(p.damage, p.yaw);
+            if (p.isVenomous) {
+              this.poisonTimer = Math.max(this.poisonTimer, 3.2);
+              this.poisonTickTimer = Math.max(this.poisonTickTimer, 0.9);
+              soundEngine.playPoisonHit();
+              this.eventBannerText = 'Токсичный яд! Соберите 1 Бульбу или Чеснок';
+              this.eventBannerTimer = 1.9;
+            }
           }
           this.spawnSplashBurst(p.x, p.z, 6, 'splash', 5);
           this.scene.remove(p.mesh);
@@ -1943,7 +2613,12 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
   private damageMonster(index: number, amount: number, isCrit: boolean) {
     const m = this.monsters[index];
     if (!m) return;
-    m.hp -= amount;
+    if (m.isCloaked) {
+      m.isCloaked = false;
+      m.vulnerableTimer = Math.max(m.vulnerableTimer, 2.0);
+    }
+    const finalDamage = m.vulnerableTimer > 0 ? Math.round(amount * 1.45) : amount;
+    m.hp -= finalDamage;
     m.hitFlash = 0.11;
     this.spawnSplashBurst(m.x, m.z, isCrit ? 9 : 5, isCrit ? 'spark' : 'splash', isCrit ? 6.5 : 4.5);
 
@@ -1990,7 +2665,7 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
     } else if (m.kind === 'puffer') {
       soundEngine.playMonsterShot(false, false);
       for (let k = 0; k < 8; k++) {
-        this.spawnEnemyOrb(m.x, m.z, (k / 8) * Math.PI * 2, 12, Math.round(m.damage * 0.65));
+        this.spawnEnemyOrb(m.x, m.z, (k / 8) * Math.PI * 2, 12, Math.round(m.damage * 0.65), false, true, true);
       }
     }
 
@@ -2118,13 +2793,31 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
         } else if (pk.kind === 'bulba_heal') {
           soundEngine.playPickup('repair');
           this.stats.hp = Math.min(this.stats.maxHp, this.stats.hp + pk.value);
-          this.eventBannerText = `+1 Бульба · Здоровье +${pk.value} HP`;
+          const cured = this.poisonTimer > 0;
+          this.poisonTimer = 0;
+          this.poisonTickTimer = 0;
+          this.eventBannerText = cured
+            ? `+1 Бульба · +${pk.value} HP и яд снят!`
+            : `+1 Бульба · Здоровье +${pk.value} HP`;
           this.eventBannerTimer = 2.0;
           this.emitHud();
         } else if (pk.kind === 'garlic_overdrive') {
           soundEngine.playPickup('overdrive');
           this.overdriveTimer = pk.value;
+          const cured = this.poisonTimer > 0;
+          this.poisonTimer = 0;
+          this.poisonTickTimer = 0;
           this.spawnRing(this.boatX, this.boatZ, 1.0, 9.0, 0.45, true);
+          this.disruptIllusionsAndCloaks(this.boatX, this.boatZ, 13, false);
+          for (let hIdx = this.hazards.length - 1; hIdx >= 0; hIdx--) {
+            const hz = this.hazards[hIdx];
+            if (hz.kind === 'slime_cloud' && Math.hypot(hz.x - this.boatX, hz.z - this.boatZ) <= 11) {
+              this.scene.remove(hz.mesh);
+              hz.mesh.geometry.dispose();
+              hz.mat.dispose();
+              this.hazards.splice(hIdx, 1);
+            }
+          }
           for (const m of this.monsters) {
             const md = Math.hypot(m.x - this.boatX, m.z - this.boatZ);
             if (md <= 9.0 && md > 0.01) {
@@ -2134,7 +2827,9 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
               m.vz += Math.cos(pushYaw) * force;
             }
           }
-          this.eventBannerText = 'Чеснок! Форсаж и чесночная волна';
+          this.eventBannerText = cured
+            ? 'Чеснок! Форсаж, волна и яд очищен'
+            : 'Чеснок! Форсаж и чесночная волна';
           this.eventBannerTimer = 2.2;
           this.emitHud();
         } else {
@@ -2201,6 +2896,170 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
       kind: isShockwave ? 'shockwave' : 'ring',
       mesh,
     });
+  }
+
+  private spawnElectricShockwave(x: number, z: number, startScale: number, endScale: number, life: number) {
+    const mat = this.electricShockMat.clone();
+    const mesh = new THREE.Mesh(this.ringGeo, mat);
+    mesh.position.set(x, 0.24, z);
+    this.scene.add(mesh);
+    this.particles.push({
+      x,
+      y: 0.24,
+      z,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      gravity: 0,
+      life,
+      maxLife: life,
+      startScale,
+      endScale,
+      kind: 'shockwave',
+      mesh,
+    });
+  }
+
+  private spawnHazard(
+    kind: HazardKind,
+    x: number,
+    z: number,
+    radius: number,
+    life: number,
+    vx = 0,
+    vz = 0
+  ) {
+    let color = 0x84cc16;
+    let opacity = 0.45;
+    let geo: THREE.BufferGeometry;
+    if (kind === 'vortex') {
+      color = 0x38bdf8;
+      opacity = 0.42;
+      geo = new THREE.RingGeometry(radius * 0.28, radius, 28);
+      geo.rotateX(-Math.PI / 2);
+    } else if (kind === 'chrono_bubble') {
+      color = 0xec4899;
+      opacity = 0.24;
+      geo = new THREE.SphereGeometry(radius, 20, 16);
+    } else if (kind === 'hydro_wedge') {
+      color = 0xfbbf24;
+      opacity = 0.58;
+      geo = new THREE.ConeGeometry(radius, radius * 2.2, 12);
+      geo.rotateX(Math.PI / 2);
+    } else if (kind === 'decoy_ghost' || kind === 'mirage_clone') {
+      color = kind === 'decoy_ghost' ? 0xe2e8f0 : 0x14b8a6;
+      opacity = 0.42;
+      geo = new THREE.OctahedronGeometry(radius * 0.72, 1);
+    } else {
+      geo = new THREE.CircleGeometry(radius, 24);
+      geo.rotateX(-Math.PI / 2);
+    }
+
+    const mat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, kind === 'chrono_bubble' || kind === 'decoy_ghost' || kind === 'mirage_clone' ? 0.5 : 0.16, z);
+    if (kind === 'hydro_wedge') {
+      mesh.rotation.y = Math.atan2(vx, vz);
+    }
+    this.scene.add(mesh);
+
+    this.hazards.push({
+      id: this.nextEntityId++,
+      kind,
+      x,
+      z,
+      vx,
+      vz,
+      radius,
+      life,
+      maxLife: life,
+      electrified: false,
+      tickTimer: 0.4,
+      mesh,
+      mat,
+    });
+  }
+
+  private updateHazards(dt: number) {
+    this.slimeSlowActive = false;
+    const insul = this.getInsulationMult();
+
+    for (let i = this.hazards.length - 1; i >= 0; i--) {
+      const hz = this.hazards[i];
+      hz.life -= dt;
+      if (hz.life <= 0) {
+        this.scene.remove(hz.mesh);
+        hz.mesh.geometry.dispose();
+        hz.mat.dispose();
+        this.hazards.splice(i, 1);
+        continue;
+      }
+
+      hz.x += hz.vx * dt;
+      hz.z += hz.vz * dt;
+      const fade = Math.min(1, hz.life / Math.min(0.8, hz.maxLife));
+      const d = Math.hypot(this.boatX - hz.x, this.boatZ - hz.z);
+
+      if (hz.kind === 'slime_cloud') {
+        hz.mesh.position.set(hz.x, 0.14, hz.z);
+        hz.mat.opacity = (hz.electrified ? 0.56 : 0.36) * fade;
+        if (d <= hz.radius + this.boatRadius * 0.6) {
+          this.slimeSlowActive = true;
+          if (hz.electrified) {
+            hz.tickTimer -= dt;
+            if (hz.tickTimer <= 0) {
+              hz.tickTimer = 0.7;
+              this.stunTimer = Math.max(this.stunTimer, 0.45 * insul);
+              if (this.invulnTimer <= 0) {
+                this.hurtPlayer(8, Math.atan2(this.boatX - hz.x, this.boatZ - hz.z), 0.7 * insul);
+              }
+            }
+          }
+        }
+      } else if (hz.kind === 'vortex') {
+        hz.mesh.position.set(hz.x, 0.16, hz.z);
+        hz.mesh.rotation.y += dt * 4.5;
+        hz.mat.opacity = 0.42 * fade;
+        if (d <= hz.radius && d > 0.35) {
+          const pull = (1 - d / hz.radius) * 26 * insul * dt;
+          this.boatVx += ((hz.x - this.boatX) / d) * pull;
+          this.boatVz += ((hz.z - this.boatZ) / d) * pull;
+        }
+      } else if (hz.kind === 'chrono_bubble') {
+        hz.mesh.position.set(hz.x, 0.5, hz.z);
+        hz.mesh.rotation.y += dt * 1.4;
+        hz.mat.opacity = 0.24 * fade;
+        if (d <= hz.radius) {
+          this.timeSlowTimer = Math.max(this.timeSlowTimer, 0.2);
+        }
+      } else if (hz.kind === 'hydro_wedge') {
+        hz.mesh.position.set(hz.x, 0.42, hz.z);
+        hz.mat.opacity = 0.58 * fade;
+        if (d <= hz.radius + this.boatRadius * 0.7) {
+          const knockYaw = Math.atan2(hz.vx, hz.vz);
+          this.boatVx += Math.sin(knockYaw) * 22 * insul;
+          this.boatVz += Math.cos(knockYaw) * 22 * insul;
+          if (this.invulnTimer <= 0) {
+            this.hurtPlayer(12, knockYaw, 1.5 * insul);
+          }
+          hz.life = 0;
+        }
+      } else if (hz.kind === 'decoy_ghost' || hz.kind === 'mirage_clone') {
+        hz.mesh.position.set(hz.x, 0.55 + Math.sin(this.worldTime * 4 + hz.id) * 0.18, hz.z);
+        hz.mesh.rotation.y += dt * 2.4;
+        hz.mat.opacity = 0.42 * fade;
+        if (d <= hz.radius + this.boatRadius * 0.65) {
+          this.spawnSplashBurst(hz.x, hz.z, 6, 'spark', 5);
+          hz.life = 0;
+        }
+      }
+    }
   }
 
   private updateParticles(dt: number) {
@@ -2306,6 +3165,8 @@ export class BlackLakeEngine3D implements BlackLakeEngine {
       depthCharges: this.stats.depthCharges,
       maxDepthCharges: this.stats.maxDepthCharges,
       overdriveTimer: this.overdriveTimer,
+      poisonTimer: this.poisonTimer,
+      stunTimer: this.stunTimer,
       bossName: boss ? boss.name : null,
       bossHp: boss ? boss.hp : 0,
       bossMaxHp: boss ? boss.maxHp : 0,

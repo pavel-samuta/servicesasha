@@ -18,6 +18,11 @@ export type MonsterKind =
   | 'lin'
   | 'peskar'
   | 'karas'
+  | 'glass_ghost'
+  | 'mirage_ray'
+  | 'chrono_morok'
+  | 'sky_jelly'
+  | 'turtle_rift'
   | 'leviathan'
   | 'croc_gena';
 
@@ -28,7 +33,8 @@ export type UpgradeId =
   | 'reinforced_hull'
   | 'turboprop'
   | 'depth_charges'
-  | 'lantern_crit';
+  | 'lantern_crit'
+  | 'hull_insulation';
 
 export interface UpgradeOption {
   id: UpgradeId;
@@ -72,9 +78,16 @@ export interface HudSnapshot {
   maxCombo: number;
   dashCooldownRatio: number; // 0 = ready, 1 = full cooldown
   dashReady: boolean;
+  sonarCooldownRatio: number; // 0 = ready, 1 = full cooldown
+  sonarReady: boolean;
   depthCharges: number;
   maxDepthCharges: number;
   overdriveTimer: number;
+  poisonTimer: number;
+  stunTimer: number;
+  disorientTimer: number;
+  hudGlitchTimer: number;
+  timeSlowTimer: number;
   bossName: string | null;
   bossHp: number;
   bossMaxHp: number;
@@ -243,6 +256,7 @@ export interface BlackLakeEngine {
   setTouchMove(dx: number, dy: number): void;
   triggerDash(): void;
   triggerDepthCharge(): void;
+  triggerSonarPulse(): void;
   resize(width: number, height: number): void;
   dispose(): void;
 }

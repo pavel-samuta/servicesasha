@@ -327,10 +327,25 @@ function buildRosterForTour(tour: number): MonsterKind[] {
   if (tour === 1) return ['pike', 'peskar', 'catfish'];
   if (tour === 2) return ['pike', 'ersh', 'peskar', 'catfish'];
   if (tour === 3) return ['pike', 'ersh', 'lin', 'catfish', 'peskar'];
-  if (tour === 4) return ['pike', 'ersh', 'lin', 'eel', 'peskar'];
-  if (tour <= 6) return ['pike', 'ersh', 'lin', 'eel', 'puffer', 'peskar', 'catfish'];
-  if (tour <= 9) return ['pike', 'ersh', 'lin', 'eel', 'puffer', 'peskar', 'catfish', 'karas'];
-  return ['pike', 'ersh', 'lin', 'eel', 'puffer', 'peskar', 'catfish', 'karas'];
+  if (tour === 4) return ['pike', 'ersh', 'lin', 'eel', 'peskar', 'glass_ghost'];
+  if (tour === 5) return ['pike', 'ersh', 'lin', 'eel', 'puffer', 'peskar', 'glass_ghost', 'sky_jelly'];
+  if (tour === 6) return ['pike', 'ersh', 'lin', 'eel', 'puffer', 'peskar', 'catfish', 'glass_ghost', 'mirage_ray', 'turtle_rift'];
+  if (tour === 7) return ['pike', 'ersh', 'lin', 'eel', 'puffer', 'karas', 'glass_ghost', 'mirage_ray', 'sky_jelly', 'turtle_rift'];
+  return [
+    'pike',
+    'ersh',
+    'lin',
+    'eel',
+    'puffer',
+    'peskar',
+    'catfish',
+    'karas',
+    'glass_ghost',
+    'mirage_ray',
+    'chrono_morok',
+    'sky_jelly',
+    'turtle_rift',
+  ];
 }
 
 export const TOURS: TourDefinition[] = Array.from({ length: TOTAL_TOURS }, (_, idx) => {

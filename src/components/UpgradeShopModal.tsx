@@ -12,6 +12,7 @@ interface UpgradeShopModalProps {
   onBuyUpgrade: (id: UpgradeId) => void;
   onRepairBoat: () => void;
   onNextWave: () => void;
+  onSaveAndExit?: () => void;
 }
 
 export function UpgradeShopModal({
@@ -23,6 +24,7 @@ export function UpgradeShopModal({
   onBuyUpgrade,
   onRepairBoat,
   onNextWave,
+  onSaveAndExit,
 }: UpgradeShopModalProps) {
   const upgradeList = Object.values(UPGRADE_CATALOG);
   const repairCost = 18;
@@ -137,14 +139,25 @@ export function UpgradeShopModal({
               </span>
             )}
           </div>
-          <button
-            type="button"
-            onClick={onNextWave}
-            className="inline-flex items-center gap-2 rounded-lg bg-amber-500 px-5 py-2.5 text-sm font-bold text-slate-950 transition-colors hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-amber-400 whitespace-nowrap shrink-0"
-          >
-            <span>Выйти на тур {wave + 1}</span>
-            <ArrowRight className="h-4 w-4" aria-hidden="true" />
-          </button>
+          <div className="flex items-center gap-2.5 shrink-0">
+            {onSaveAndExit && (
+              <button
+                type="button"
+                onClick={onSaveAndExit}
+                className="rounded-lg border border-slate-200/15 bg-slate-800/70 px-3.5 py-2.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700 hover:text-white whitespace-nowrap shrink-0"
+              >
+                Сохранить и в меню
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onNextWave}
+              className="inline-flex items-center gap-2 rounded-lg bg-amber-500 px-5 py-2.5 text-sm font-bold text-slate-950 transition-colors hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-amber-400 whitespace-nowrap shrink-0"
+            >
+              <span>Выйти на тур {wave + 1}</span>
+              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
         </div>
       </div>
     </div>

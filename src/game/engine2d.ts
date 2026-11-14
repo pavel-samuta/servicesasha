@@ -3,6 +3,7 @@ import {
   BASE_PLAYER_STATS,
   DIFFICULTIES,
   HIGH_SCORE_STORAGE_KEY,
+  MONSTER_EYE_COLORS,
   UPGRADE_CATALOG,
 } from './constants';
 import {
@@ -84,6 +85,7 @@ interface Projectile2D {
   isCrit: boolean;
   isBitcoin?: boolean;
   isSlime?: boolean;
+  isVenomous?: boolean;
   pierce: number;
   hitIds: number[];
 }
@@ -129,6 +131,21 @@ interface RainDrop2D {
   y: number;
   len: number;
   speed: number;
+}
+
+interface FogWisp2D {
+  x: number;
+  z: number;
+  radius: number;
+  speedMult: number;
+  phase: number;
+  alpha: number;
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const clean = hex.replace('#', '');
+  const num = parseInt(clean, 16);
+  return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
 }
 
 const WEATHER_ORDER: WeatherKind[] = ['clear', 'mist', 'rain', 'storm'];
@@ -215,6 +232,9 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
   private maxCombo = 0;
   private comboTimer = 0;
   private overdriveTimer = 0;
+  private poisonTimer = 0;
+  private poisonTickTimer = 0;
+  private stunTimer = 0;
   private fireTimer = 0;
   private screenShake = 0;
   private hudEmitTimer = 0;
@@ -223,6 +243,12 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
   private weatherShiftTimer = 26;
   private lightningFlash = 0;
   private raindrops: RainDrop2D[] = [];
+  private fogWisps: FogWisp2D[] = [];
+  private fogDensity2D = 0.22;
+  private fogR = 14;
+  private fogG = 28;
+  private fogB = 38;
+  private mistBankOpacity2D = 0.08;
 
   private keys = new Set<string>();
   private mouseDown = false;
@@ -262,6 +288,17 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
         y: Math.random() * 1000,
         len: 12 + Math.random() * 14,
         speed: 620 + Math.random() * 240,
+      });
+    }
+
+    for (let i = 0; i < 30; i++) {
+      this.fogWisps.push({
+        x: (Math.random() * 2 - 1) * (ARENA_HALF_W + 6),
+        z: (Math.random() * 2 - 1) * (ARENA_HALF_H + 4),
+        radius: 6 + Math.random() * 7.5,
+        speedMult: 0.55 + Math.random() * 0.85,
+        phase: Math.random() * Math.PI * 2,
+        alpha: 0.45 + Math.random() * 0.55,
       });
     }
 
@@ -320,6 +357,9 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
     this.maxCombo = 0;
     this.comboTimer = 0;
     this.overdriveTimer = 0;
+    this.poisonTimer = 0;
+    this.poisonTickTimer = 0;
+    this.stunTimer = 0;
     this.fireTimer = 0;
     this.screenShake = 0;
     this.paused = false;
@@ -377,6 +417,9 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
     this.combo = 0;
     this.comboTimer = 0;
     this.overdriveTimer = 0;
+    this.poisonTimer = 0;
+    this.poisonTickTimer = 0;
+    this.stunTimer = 0;
     this.paused = paused;
 
     this.beginWave(state.wave);
@@ -402,6 +445,9 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
     this.spawnTimer = 0.4;
     this.crocSpawnTimer = tour.crocInterval * 0.75;
     this.npcShout = null;
+    this.poisonTimer = 0;
+    this.poisonTickTimer = 0;
+    this.stunTimer = 0;
     this.weather = tour.weather;
     this.weatherShiftTimer = 24;
 
@@ -710,6 +756,29 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
       if (this.npcShout.timer <= 0) this.npcShout = null;
     }
     if (this.overdriveTimer > 0) this.overdriveTimer = Math.max(0, this.overdriveTimer - dt);
+    if (this.stunTimer > 0) this.stunTimer = Math.max(0, this.stunTimer - dt);
+    if (this.poisonTimer > 0) {
+      this.poisonTimer = Math.max(0, this.poisonTimer - dt);
+      this.poisonTickTimer -= dt;
+      if (this.poisonTickTimer <= 0) {
+        this.poisonTickTimer = 0.9;
+        if (this.stats.hp > 1) {
+          this.stats.hp = Math.max(1, this.stats.hp - 2);
+          this.particles.push({
+            x: this.boatX + (Math.random() - 0.5) * 1.2,
+            z: this.boatZ + (Math.random() - 0.5) * 1.2,
+            vx: 0,
+            vz: -0.5,
+            life: 0.45,
+            maxLife: 0.45,
+            startR: 0.25,
+            endR: 0.05,
+            color: '#84cc16',
+            kind: 'spark',
+          });
+        }
+      }
+    }
 
     if (this.comboTimer > 0) {
       this.comboTimer -= dt;
@@ -787,6 +856,56 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
     } else if (this.weather === 'storm' && Math.random() < dt * 0.14) {
       this.lightningFlash = 0.55;
     }
+
+    // Dynamic biome + weather fog smoothing & drifting low-lying wisps
+    const biome = TOUR_BIOMES[this.currentTour.biome];
+    const [br, bg, bb] = hexToRgb(biome.fogColor);
+    let weatherDensityBoost = 0.16;
+    let weatherMistAlpha = 0.08;
+    let weatherTintBoost = 0.18;
+    let windSpeed = 1.25;
+
+    if (this.weather === 'mist') {
+      weatherDensityBoost = 0.56;
+      weatherMistAlpha = 0.36;
+      weatherTintBoost = 0.48;
+      windSpeed = 2.1;
+    } else if (this.weather === 'rain') {
+      weatherDensityBoost = 0.34;
+      weatherMistAlpha = 0.17;
+      weatherTintBoost = 0.28;
+      windSpeed = 3.9;
+    } else if (this.weather === 'storm') {
+      weatherDensityBoost = 0.48;
+      weatherMistAlpha = 0.26;
+      weatherTintBoost = 0.24;
+      windSpeed = 5.6;
+    }
+
+    // Thicker fog in naturally foggy biomes (misty_shallows, amber_marsh)
+    const biomeFactor = clamp((biome.fogDensity - 0.01) / 0.004, 0, 1);
+    const targetDensity = clamp(weatherDensityBoost + biomeFactor * 0.22, 0.14, 0.84);
+    const targetMistBank = clamp(weatherMistAlpha + biomeFactor * 0.14, 0.06, 0.52);
+
+    // Lighten the biome fog color slightly so drifting wisps read distinctly against deep water
+    const targetR = Math.min(220, br + 36 + weatherTintBoost * 92);
+    const targetG = Math.min(230, bg + 44 + weatherTintBoost * 100);
+    const targetB = Math.min(238, bb + 50 + weatherTintBoost * 106);
+
+    const smooth = 1 - Math.exp(-1.4 * dt);
+    this.fogDensity2D += (targetDensity - this.fogDensity2D) * smooth;
+    this.mistBankOpacity2D += (targetMistBank - this.mistBankOpacity2D) * smooth;
+    this.fogR += (targetR - this.fogR) * smooth;
+    this.fogG += (targetG - this.fogG) * smooth;
+    this.fogB += (targetB - this.fogB) * smooth;
+
+    for (const w of this.fogWisps) {
+      w.x += windSpeed * w.speedMult * dt;
+      w.z += Math.sin(this.worldTime * 0.5 + w.phase) * 0.32 * dt;
+      if (w.x > ARENA_HALF_W + 10) {
+        w.x = -ARENA_HALF_W - 10;
+      }
+    }
   }
 
   private updateBoat(dt: number) {
@@ -794,7 +913,8 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
     if (this.dashCooldownTimer > 0) this.dashCooldownTimer = Math.max(0, this.dashCooldownTimer - dt);
     if (this.recoil > 0) this.recoil = Math.max(0, this.recoil - dt * 2.8);
 
-    const maxSpeed = this.stats.speed / 20;
+    const statusMult = (this.stunTimer > 0 ? 0.35 : 1) * (this.poisonTimer > 0 ? 0.75 : 1);
+    const maxSpeed = (this.stats.speed / 20) * statusMult;
 
     let ix = this.touchMoveX;
     let iz = this.touchMoveY;
@@ -1180,6 +1300,43 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
         m.vx += (Math.sin(moveYaw + wiggle) * m.speed - m.vx) * Math.min(1, dt * 4);
         m.vz += (Math.cos(moveYaw + wiggle) * m.speed - m.vz) * Math.min(1, dt * 4);
 
+        m.stateTimer -= dt;
+        if (m.telegraphTimer > 0) {
+          m.telegraphTimer -= dt;
+          if (m.telegraphTimer <= 0) {
+            this.particles.push({
+              x: m.x,
+              z: m.z,
+              vx: 0,
+              vz: 0,
+              life: 0.4,
+              maxLife: 0.4,
+              startR: 0.9,
+              endR: 8.2,
+              color: '#00e5ff',
+              kind: 'shockwave',
+            });
+            this.spawnBurst(m.x, m.z, 10, 'spark', 7);
+            soundEngine.playElectricZap();
+            m.stateTimer = 4.2 + Math.random() * 1.2;
+
+            if (d <= 8.2) {
+              const knockYaw = Math.atan2(this.boatX - m.x, this.boatZ - m.z);
+              this.stunTimer = Math.max(this.stunTimer, 0.85);
+              if (this.invulnTimer <= 0) {
+                this.hurtPlayer(Math.round(m.damage * 0.85), knockYaw, 1.5);
+              } else {
+                this.boatVx += Math.sin(knockYaw) * 14;
+                this.boatVz += Math.cos(knockYaw) * 14;
+              }
+              this.eventBannerText = 'Угорь-искра: электроразряд! Мотор оглушён';
+              this.eventBannerTimer = 1.8;
+            }
+          }
+        } else if (d < 7.8 && m.stateTimer <= 0) {
+          m.telegraphTimer = 0.42;
+        }
+
         m.shootCooldown -= dt;
         if (m.shootCooldown <= 0 && d < 26) {
           m.shootCooldown = 2.2 + Math.random() * 0.9;
@@ -1293,7 +1450,7 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
         m.shootCooldown -= dt;
         if (m.shootCooldown <= 0 && d < 25) {
           m.shootCooldown = 2.45 + Math.random() * 0.8;
-          this.spawnEnemyOrb(m.x, m.z, yawToBoat, 12.2, m.damage, false, true);
+          this.spawnEnemyOrb(m.x, m.z, yawToBoat, 12.2, m.damage, false, true, true);
           soundEngine.playMonsterShot(false, false);
         }
       } else if (m.kind === 'peskar') {
@@ -1371,7 +1528,22 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
       if (Math.hypot(m.x - this.boatX, m.z - this.boatZ) < m.radius + this.boatRadius * 0.85) {
         if (this.invulnTimer <= 0) {
           const knockYaw = Math.atan2(this.boatX - m.x, this.boatZ - m.z);
-          this.hurtPlayer(m.damage, knockYaw, m.kind === 'karas' ? 1.8 : 1.0);
+          const hasSpines = m.kind === 'ersh' || m.kind === 'puffer' || m.kind === 'karas';
+          const isVenomous = m.kind === 'puffer' || m.kind === 'ersh';
+          const knockMult = m.kind === 'karas' ? 1.8 : m.kind === 'ersh' ? 1.35 : 1.0;
+
+          this.hurtPlayer(m.damage, knockYaw, knockMult);
+          if (hasSpines) soundEngine.playSpinePrick();
+          if (isVenomous) {
+            this.poisonTimer = Math.max(this.poisonTimer, 3.2);
+            this.poisonTickTimer = Math.max(this.poisonTickTimer, 0.9);
+            soundEngine.playPoisonHit();
+            this.eventBannerText =
+              m.kind === 'puffer'
+                ? 'Ядовитые шипы Иглобрюха! 1 Бульба или Чеснок снимут яд'
+                : 'Укол ядовитых шипов Ерша! Катер отравлен';
+            this.eventBannerTimer = 2.0;
+          }
         }
         const pushYaw = Math.atan2(m.x - this.boatX, m.z - this.boatZ);
         m.vx = Math.sin(pushYaw) * 10;
@@ -1387,7 +1559,8 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
     speed: number,
     damage: number,
     isBitcoin = false,
-    isSlime = false
+    isSlime = false,
+    isVenomous = false
   ) {
     this.projectiles.push({
       fromPlayer: false,
@@ -1403,6 +1576,7 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
       isCrit: false,
       isBitcoin,
       isSlime,
+      isVenomous,
       pierce: 1,
       hitIds: [],
     });
@@ -1457,6 +1631,13 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
       } else if (Math.hypot(p.x - this.boatX, p.z - this.boatZ) <= this.boatRadius * 0.85 + p.radius) {
         if (this.invulnTimer <= 0) {
           this.hurtPlayer(p.damage, p.yaw);
+          if (p.isVenomous) {
+            this.poisonTimer = Math.max(this.poisonTimer, 3.2);
+            this.poisonTickTimer = Math.max(this.poisonTickTimer, 0.9);
+            soundEngine.playPoisonHit();
+            this.eventBannerText = 'Токсичный яд! Соберите 1 Бульбу или Чеснок';
+            this.eventBannerTimer = 1.9;
+          }
         }
         this.spawnBurst(p.x, p.z, 6, 'splash', 5);
         this.projectiles.splice(i, 1);
@@ -1524,7 +1705,7 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
     } else if (m.kind === 'puffer') {
       soundEngine.playMonsterShot(false, false);
       for (let k = 0; k < 8; k++) {
-        this.spawnEnemyOrb(m.x, m.z, (k / 8) * Math.PI * 2, 12, Math.round(m.damage * 0.65));
+        this.spawnEnemyOrb(m.x, m.z, (k / 8) * Math.PI * 2, 12, Math.round(m.damage * 0.65), false, true, true);
       }
     }
 
@@ -1618,13 +1799,21 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
           soundEngine.playPickup('coin');
         } else if (pk.kind === 'bulba_heal') {
           this.stats.hp = Math.min(this.stats.maxHp, this.stats.hp + pk.value);
+          const cured = this.poisonTimer > 0;
+          this.poisonTimer = 0;
+          this.poisonTickTimer = 0;
           soundEngine.playPickup('repair');
-          this.eventBannerText = `1 Бульба! +${pk.value} к корпусу`;
+          this.eventBannerText = cured
+            ? `1 Бульба! +${pk.value} к корпусу и яд снят`
+            : `1 Бульба! +${pk.value} к корпусу`;
           this.eventBannerTimer = 2.0;
           this.emitHud();
         } else if (pk.kind === 'garlic_overdrive') {
           soundEngine.playPickup('overdrive');
           this.overdriveTimer = pk.value;
+          const cured = this.poisonTimer > 0;
+          this.poisonTimer = 0;
+          this.poisonTickTimer = 0;
           this.particles.push({
             x: this.boatX,
             z: this.boatZ,
@@ -1646,7 +1835,9 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
               m.vz += Math.cos(pushYaw) * force;
             }
           }
-          this.eventBannerText = 'Чеснок! Форсаж и чесночная волна';
+          this.eventBannerText = cured
+            ? 'Чеснок! Форсаж, волна и яд очищен'
+            : 'Чеснок! Форсаж и чесночная волна';
           this.eventBannerTimer = 2.2;
           this.emitHud();
         } else {
@@ -1844,13 +2035,62 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
       this.drawFisherman2D(f);
     }
 
+    // 9. World-space drifting biome & weather fog wisps floating across lake and islands
+    const rInt = Math.round(this.fogR);
+    const gInt = Math.round(this.fogG);
+    const bInt = Math.round(this.fogB);
+    for (const w of this.fogWisps) {
+      const pulse = 0.8 + 0.2 * Math.sin(this.worldTime * 0.7 + w.phase);
+      const peakAlpha = clamp(this.mistBankOpacity2D * w.alpha * pulse, 0.02, 0.52);
+      const wispGrad = ctx.createRadialGradient(w.x, w.z, w.radius * 0.1, w.x, w.z, w.radius);
+      wispGrad.addColorStop(0, `rgba(${rInt}, ${gInt}, ${bInt}, ${peakAlpha.toFixed(3)})`);
+      wispGrad.addColorStop(0.55, `rgba(${rInt}, ${gInt}, ${bInt}, ${(peakAlpha * 0.45).toFixed(3)})`);
+      wispGrad.addColorStop(1, `rgba(${rInt}, ${gInt}, ${bInt}, 0)`);
+      ctx.fillStyle = wispGrad;
+      ctx.beginPath();
+      ctx.arc(w.x, w.z, w.radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     ctx.restore();
 
-    // 9. Screen-space Atmospheric Weather Overlay (Mist, Rain, Storm)
-    if (this.weather === 'mist') {
-      ctx.fillStyle = 'rgba(148, 163, 184, 0.14)';
-      ctx.fillRect(0, 0, this.width, this.height);
-    } else if (this.weather === 'rain' || this.weather === 'storm') {
+    // 10. Screen-space Dynamic Biome & Weather Fog Shroud centered on Baron Sasha's Lantern
+    const boatScreenX = this.width / 2 + shakeX + (this.boatX - this.camX) * scale;
+    const boatScreenY = this.height / 2 + shakeY + (this.boatZ - this.camZ) * scale;
+    const lanternClearPx = Math.max(
+      95,
+      (this.stats.lanternRadius / 22 + (this.overdriveTimer > 0 ? 3.5 : 0)) * scale * 0.72
+    );
+    const outerFogPx = Math.max(this.width, this.height) * (this.weather === 'mist' ? 0.58 : 0.74);
+
+    // Subtle full-screen atmospheric biome haze
+    const ambientHaze = clamp(this.fogDensity2D * 0.24, 0.03, 0.22);
+    ctx.fillStyle = `rgba(${rInt}, ${gInt}, ${bInt}, ${ambientHaze.toFixed(3)})`;
+    ctx.fillRect(0, 0, this.width, this.height);
+
+    // Thickened outer Black Lake fog around the boat's searchlight perimeter
+    const shroudR = Math.max(4, Math.round(rInt * 0.42));
+    const shroudG = Math.max(8, Math.round(gInt * 0.42));
+    const shroudB = Math.max(12, Math.round(bInt * 0.45));
+    const edgeFogAlpha = clamp(0.42 + this.fogDensity2D * 0.56, 0.42, 0.9);
+    const midFogAlpha = clamp(this.fogDensity2D * 0.42, 0.08, 0.48);
+
+    const fogGrad = ctx.createRadialGradient(
+      boatScreenX,
+      boatScreenY,
+      lanternClearPx * 0.55,
+      boatScreenX,
+      boatScreenY,
+      outerFogPx
+    );
+    fogGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    fogGrad.addColorStop(0.45, `rgba(${rInt}, ${gInt}, ${bInt}, ${midFogAlpha.toFixed(3)})`);
+    fogGrad.addColorStop(1, `rgba(${shroudR}, ${shroudG}, ${shroudB}, ${edgeFogAlpha.toFixed(3)})`);
+    ctx.fillStyle = fogGrad;
+    ctx.fillRect(0, 0, this.width, this.height);
+
+    // 11. Screen-space Rain / Storm Streaks
+    if (this.weather === 'rain' || this.weather === 'storm') {
       ctx.strokeStyle = this.weather === 'storm' ? 'rgba(186, 230, 253, 0.36)' : 'rgba(148, 163, 184, 0.26)';
       ctx.lineWidth = 1.2;
       ctx.beginPath();
@@ -1865,20 +2105,6 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
       ctx.fillStyle = `rgba(224, 242, 254, ${this.lightningFlash * 0.45})`;
       ctx.fillRect(0, 0, this.width, this.height);
     }
-
-    // Subtle dark lake vignette around screen edges
-    const grad = ctx.createRadialGradient(
-      this.width / 2,
-      this.height / 2,
-      Math.min(this.width, this.height) * 0.32,
-      this.width / 2,
-      this.height / 2,
-      Math.max(this.width, this.height) * 0.72
-    );
-    grad.addColorStop(0, 'rgba(0,0,0,0)');
-    grad.addColorStop(1, 'rgba(2, 6, 12, 0.55)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, this.width, this.height);
 
     ctx.restore();
   }
@@ -2137,8 +2363,25 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
   private drawMonster2D(m: Monster2D) {
     const ctx = this.ctx;
 
-    // Telegraph lunge line for Pike, Karas & Leviathan
-    if (m.telegraphTimer > 0) {
+    // Telegraph lunge line for Pike, Karas & Leviathan (and electric charge halo for Eel)
+    if (m.kind === 'eel' && m.telegraphTimer > 0) {
+      ctx.save();
+      ctx.translate(m.x, m.z);
+      ctx.strokeStyle = '#00e5ff';
+      ctx.lineWidth = 0.14;
+      ctx.beginPath();
+      const sparks = 10;
+      for (let k = 0; k <= sparks; k++) {
+        const a = (k / sparks) * Math.PI * 2;
+        const rr = m.radius * (1.45 + (k % 2 === 0 ? 0.5 : -0.15) + Math.sin(this.worldTime * 35 + k) * 0.2);
+        const px = Math.cos(a) * rr;
+        const pz = Math.sin(a) * rr;
+        if (k === 0) ctx.moveTo(px, pz);
+        else ctx.lineTo(px, pz);
+      }
+      ctx.stroke();
+      ctx.restore();
+    } else if (m.telegraphTimer > 0) {
       ctx.save();
       ctx.translate(m.x, m.z);
       ctx.rotate(-m.telegraphYaw + Math.PI / 2);
@@ -2171,7 +2414,7 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
       accentColor = '#fef08a';
     } else if (m.kind === 'lin') {
       bodyColor = '#15803d';
-      accentColor = '#4ade80';
+      accentColor = '#a3e635';
     } else if (m.kind === 'peskar') {
       bodyColor = '#d97706';
       accentColor = '#fde68a';
@@ -2210,16 +2453,56 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
     ctx.ellipse(0, 0, m.radius, m.radius * (m.kind === 'eel' ? 0.42 : 0.68), 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Species signature details
+    // Species signature details: fin-ray spines, aposematic venom glands & electric organs
     if (m.kind === 'ersh' || m.kind === 'puffer') {
       ctx.strokeStyle = accentColor;
-      ctx.lineWidth = 0.1;
-      for (let s = 0; s < 6; s++) {
-        const a = (s / 6) * Math.PI * 2;
+      ctx.lineWidth = 0.11;
+      for (let s = 0; s < 8; s++) {
+        const a = (s / 8) * Math.PI * 2;
         ctx.beginPath();
-        ctx.moveTo(Math.cos(a) * m.radius * 0.75, Math.sin(a) * m.radius * 0.55);
-        ctx.lineTo(Math.cos(a) * m.radius * 1.28, Math.sin(a) * m.radius * 1.05);
+        ctx.moveTo(Math.cos(a) * m.radius * 0.68, Math.sin(a) * m.radius * 0.5);
+        ctx.lineTo(Math.cos(a) * m.radius * 1.32, Math.sin(a) * m.radius * 1.08);
         ctx.stroke();
+
+        // Glowing venom gland sacs at spine bases
+        ctx.fillStyle = m.kind === 'puffer' ? '#d946ef' : '#a855f7';
+        ctx.beginPath();
+        ctx.arc(Math.cos(a) * m.radius * 0.72, Math.sin(a) * m.radius * 0.52, m.radius * 0.11, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (m.kind === 'lin') {
+      // Bright warning lime stripe + glowing venom glands on cheeks
+      ctx.fillStyle = '#bef264';
+      ctx.fillRect(-m.radius * 0.5, -m.radius * 0.11, m.radius * 0.95, m.radius * 0.22);
+      ctx.beginPath();
+      ctx.arc(m.radius * 0.22, -m.radius * 0.52, m.radius * 0.16, 0, Math.PI * 2);
+      ctx.arc(m.radius * 0.22, m.radius * 0.52, m.radius * 0.16, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (m.kind === 'eel') {
+      // Bio-electric cyan organ rings along body
+      ctx.strokeStyle = '#00e5ff';
+      ctx.lineWidth = 0.12;
+      for (const ox of [-0.45, -0.1, 0.25]) {
+        ctx.beginPath();
+        ctx.moveTo(m.radius * ox, -m.radius * 0.36);
+        ctx.lineTo(m.radius * ox, m.radius * 0.36);
+        ctx.stroke();
+      }
+    } else if (m.kind === 'pike' || m.kind === 'karas') {
+      // Rigid dorsal/pectoral fin-ray spines
+      ctx.strokeStyle = accentColor;
+      ctx.lineWidth = 0.1;
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(m.radius * 0.1, side * m.radius * 0.5);
+        ctx.lineTo(-m.radius * 0.2, side * m.radius * 1.15);
+        ctx.stroke();
+      }
+      if (m.kind === 'karas') {
+        ctx.fillStyle = '#fb923c';
+        ctx.beginPath();
+        ctx.arc(m.radius * 0.62, 0, m.radius * 0.42, -Math.PI / 2, Math.PI / 2);
+        ctx.fill();
       }
     } else if (m.kind === 'croc_gena') {
       // Red coat & hat
@@ -2229,19 +2512,13 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
       ctx.beginPath();
       ctx.arc(m.radius * 0.25, 0, m.radius * 0.34, 0, Math.PI * 2);
       ctx.fill();
-    } else if (m.kind === 'karas') {
-      // Copper forehead ram plate
-      ctx.fillStyle = '#fb923c';
-      ctx.beginPath();
-      ctx.arc(m.radius * 0.62, 0, m.radius * 0.42, -Math.PI / 2, Math.PI / 2);
-      ctx.fill();
     }
 
-    // Glowing eyes
-    ctx.fillStyle = '#fef08a';
+    // Unique Predator Eye Color per species
+    ctx.fillStyle = MONSTER_EYE_COLORS[m.kind];
     ctx.beginPath();
-    ctx.arc(m.radius * 0.52, -m.radius * 0.26, m.radius * 0.14, 0, Math.PI * 2);
-    ctx.arc(m.radius * 0.52, m.radius * 0.26, m.radius * 0.14, 0, Math.PI * 2);
+    ctx.arc(m.radius * 0.52, -m.radius * 0.26, m.radius * 0.15, 0, Math.PI * 2);
+    ctx.arc(m.radius * 0.52, m.radius * 0.26, m.radius * 0.15, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.restore();
@@ -2360,6 +2637,8 @@ export class BlackLakeEngine2D implements BlackLakeEngine {
       depthCharges: this.stats.depthCharges,
       maxDepthCharges: this.stats.maxDepthCharges,
       overdriveTimer: this.overdriveTimer,
+      poisonTimer: this.poisonTimer,
+      stunTimer: this.stunTimer,
       bossName: boss ? boss.name : null,
       bossHp: boss ? boss.hp : 0,
       bossMaxHp: boss ? boss.maxHp : 0,

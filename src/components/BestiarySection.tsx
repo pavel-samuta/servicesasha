@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { BookOpen, CheckCircle2, Crosshair, Fish, Heart, Lock, Play, ShieldAlert, Skull, Zap } from 'lucide-react';
 import { PlayerRecords } from '../game/achievements';
-import { BESTIARY_ENTRIES } from '../game/constants';
+import { BESTIARY_ENTRIES, MONSTER_EYE_COLORS } from '../game/constants';
 import { MonsterKind } from '../game/types';
 import { Bestiary3DViewer } from './Bestiary3DViewer';
 
@@ -175,8 +175,23 @@ export function BestiarySection({ records, initialKind, onStartGame }: BestiaryS
                   </div>
                 </div>
 
+                <div className="flex flex-wrap items-center gap-3 rounded-md border border-slate-200/10 bg-[#081019] px-3 py-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="inline-block h-3 w-3 rounded-xs border border-white/30"
+                      style={{ backgroundColor: MONSTER_EYE_COLORS[selectedEntry.kind] }}
+                      aria-hidden="true"
+                    />
+                    <span className="text-slate-400">Цвет глаз:</span>
+                    <strong className="text-slate-100">{selectedEntry.eyeColorLabel}</strong>
+                  </div>
+                </div>
+
                 <div className="space-y-2.5 text-sm leading-relaxed text-slate-300">
                   <p>{selectedEntry.lore}</p>
+                  <p className="rounded-md border border-amber-400/20 bg-amber-950/20 px-3 py-2 text-xs text-amber-100/90">
+                    <strong className="text-amber-300">Защита и оружие:</strong> {selectedEntry.defenseTrait}
+                  </p>
                   <p className="text-xs text-slate-400">
                     <strong className="text-slate-200">Тактика:</strong> {selectedEntry.behavior}
                   </p>

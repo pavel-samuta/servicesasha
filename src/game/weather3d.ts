@@ -1,13 +1,18 @@
 import * as THREE from 'three';
 import { soundEngine } from './audio';
 import { LakeMaterials, waterHeightAt } from './materials3d';
+import { TOUR_BIOMES, TourBiomeId } from './tours';
 import { WeatherKind } from './types';
 
 interface WeatherProfile {
   kind: WeatherKind;
   label: string;
-  fogDensity: number;
+  fogDensityOffset: number;
+  fogBiomeMult: number;
   skyColor: THREE.Color;
+  skyWeight: number;
+  fogTintColor: THREE.Color;
+  fogTintWeight: number;
   moonIntensity: number;
   hemiIntensity: number;
   waveAmp: number;
@@ -27,16 +32,28 @@ export const WEATHER_LABELS: Record<WeatherKind, string> = {
 
 const WEATHER_ORDER: WeatherKind[] = ['clear', 'mist', 'rain', 'storm'];
 
+const BIOME_MIST_BASE: Record<TourBiomeId, number> = {
+  midnight_pine: 0.035,
+  amber_marsh: 0.11,
+  misty_shallows: 0.15,
+  storm_abyss: 0.07,
+  crimson_eclipse: 0.085,
+};
+
 const WEATHER_PROFILES: Record<WeatherKind, WeatherProfile> = {
   clear: {
     kind: 'clear',
     label: WEATHER_LABELS.clear,
-    fogDensity: 0.0105,
+    fogDensityOffset: 0.001,
+    fogBiomeMult: 0.95,
     skyColor: new THREE.Color('#040911'),
+    skyWeight: 0.2,
+    fogTintColor: new THREE.Color('#0c1824'),
+    fogTintWeight: 0.18,
     moonIntensity: 1.45,
     hemiIntensity: 0.9,
     waveAmp: 1.0,
-    mistOpacity: 0.0,
+    mistOpacity: 0.02,
     rainOpacity: 0.0,
     rainSpeed: 28,
     windX: 1.2,
@@ -45,26 +62,34 @@ const WEATHER_PROFILES: Record<WeatherKind, WeatherProfile> = {
   mist: {
     kind: 'mist',
     label: WEATHER_LABELS.mist,
-    fogDensity: 0.0245,
-    skyColor: new THREE.Color('#0b1620'),
+    fogDensityOffset: 0.0125,
+    fogBiomeMult: 1.38,
+    skyColor: new THREE.Color('#132230'),
+    skyWeight: 0.48,
+    fogTintColor: new THREE.Color('#273d4e'),
+    fogTintWeight: 0.5,
     moonIntensity: 0.82,
-    hemiIntensity: 0.82,
+    hemiIntensity: 0.86,
     waveAmp: 0.85,
-    mistOpacity: 0.24,
+    mistOpacity: 0.28,
     rainOpacity: 0.0,
     rainSpeed: 26,
     windX: 2.2,
-    starsOpacity: 0.2,
+    starsOpacity: 0.18,
   },
   rain: {
     kind: 'rain',
     label: WEATHER_LABELS.rain,
-    fogDensity: 0.0175,
-    skyColor: new THREE.Color('#050b14'),
+    fogDensityOffset: 0.0068,
+    fogBiomeMult: 1.15,
+    skyColor: new THREE.Color('#050c16'),
+    skyWeight: 0.34,
+    fogTintColor: new THREE.Color('#122030'),
+    fogTintWeight: 0.34,
     moonIntensity: 0.95,
     hemiIntensity: 0.72,
     waveAmp: 1.32,
-    mistOpacity: 0.08,
+    mistOpacity: 0.1,
     rainOpacity: 0.44,
     rainSpeed: 34,
     windX: 5.8,
@@ -73,12 +98,16 @@ const WEATHER_PROFILES: Record<WeatherKind, WeatherProfile> = {
   storm: {
     kind: 'storm',
     label: WEATHER_LABELS.storm,
-    fogDensity: 0.0225,
+    fogDensityOffset: 0.0108,
+    fogBiomeMult: 1.3,
     skyColor: new THREE.Color('#03070e'),
+    skyWeight: 0.42,
+    fogTintColor: new THREE.Color('#0c1626'),
+    fogTintWeight: 0.4,
     moonIntensity: 0.65,
     hemiIntensity: 0.56,
     waveAmp: 1.65,
-    mistOpacity: 0.14,
+    mistOpacity: 0.17,
     rainOpacity: 0.64,
     rainSpeed: 42,
     windX: 9.5,
@@ -86,7 +115,7 @@ const WEATHER_PROFILES: Record<WeatherKind, WeatherProfile> = {
   },
 };
 
-const MIST_COUNT = 28;
+const MIST_COUNT = 34;
 const RAIN_COUNT = 720;
 const SPLASH_COUNT = 48;
 
@@ -97,6 +126,13 @@ const RAIN_SPAN_Z = 62;
 // Module-scope scratch helpers (Zero GC in update loop)
 const _dummy = new THREE.Object3D();
 const _skyTmp = new THREE.Color();
+const _fogTmp = new THREE.Color();
+const _targetSky = new THREE.Color();
+const _targetFog = new THREE.Color();
+const _targetMistTint = new THREE.Color();
+const _biomeSky = new THREE.Color();
+const _biomeFog = new THREE.Color();
+const _brightMistBase = new THREE.Color('#b8d4ea');
 const _flashColor = new THREE.Color('#1d3557');
 
 function createMistTexture(): THREE.CanvasTexture {
@@ -105,9 +141,9 @@ function createMistTexture(): THREE.CanvasTexture {
   canvas.height = 128;
   const ctx = canvas.getContext('2d')!;
   const grad = ctx.createRadialGradient(64, 64, 6, 64, 64, 62);
-  grad.addColorStop(0, 'rgba(186, 214, 235, 0.75)');
-  grad.addColorStop(0.45, 'rgba(134, 168, 196, 0.34)');
-  grad.addColorStop(1, 'rgba(70, 98, 125, 0.0)');
+  grad.addColorStop(0, 'rgba(220, 238, 250, 0.82)');
+  grad.addColorStop(0.45, 'rgba(170, 200, 224, 0.38)');
+  grad.addColorStop(1, 'rgba(110, 140, 165, 0.0)');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, 128, 128);
 
@@ -128,15 +164,18 @@ export interface WeatherSceneHandles {
 export class WeatherSystem3D {
   private handles: WeatherSceneHandles;
   private currentKind: WeatherKind = 'clear';
+  private currentBiome: TourBiomeId = 'midnight_pine';
   private cycleTimer = 24;
 
   // Smoothed continuous atmospheric state
-  private fogDensity = WEATHER_PROFILES.clear.fogDensity;
-  private baseSkyColor = WEATHER_PROFILES.clear.skyColor.clone();
+  private fogDensity = TOUR_BIOMES.midnight_pine.fogDensity;
+  private baseSkyColor = new THREE.Color(TOUR_BIOMES.midnight_pine.skyColor);
+  private baseFogColor = new THREE.Color(TOUR_BIOMES.midnight_pine.fogColor);
+  private mistTintColor = new THREE.Color('#93b4cc');
   private moonIntensity = WEATHER_PROFILES.clear.moonIntensity;
   private hemiIntensity = WEATHER_PROFILES.clear.hemiIntensity;
   private waveAmp = WEATHER_PROFILES.clear.waveAmp;
-  private mistOpacity = 0;
+  private mistOpacity = 0.035;
   private rainOpacity = 0;
   private rainSpeed = WEATHER_PROFILES.clear.rainSpeed;
   private windX = WEATHER_PROFILES.clear.windX;
@@ -182,7 +221,7 @@ export class WeatherSystem3D {
 
     // 1. Low-lying drifting mist clouds over Black Lake
     this.mistTex = createMistTexture();
-    this.mistGeo = new THREE.PlaneGeometry(22, 22);
+    this.mistGeo = new THREE.PlaneGeometry(24, 24);
     this.mistGeo.rotateX(-Math.PI / 2);
     this.mistMat = new THREE.MeshBasicMaterial({
       map: this.mistTex,
@@ -199,11 +238,11 @@ export class WeatherSystem3D {
 
     for (let i = 0; i < MIST_COUNT; i++) {
       this.mistX[i] = (Math.random() - 0.5) * 116;
-      this.mistY[i] = 0.65 + Math.random() * 1.6;
+      this.mistY[i] = 0.55 + Math.random() * 1.75;
       this.mistZ[i] = (Math.random() - 0.5) * 86;
-      this.mistScale[i] = 0.75 + Math.random() * 0.9;
+      this.mistScale[i] = 0.78 + Math.random() * 0.95;
       this.mistRot[i] = Math.random() * Math.PI * 2;
-      this.mistDrift[i] = 0.6 + Math.random() * 0.8;
+      this.mistDrift[i] = 0.6 + Math.random() * 0.85;
     }
     this.handles.scene.add(this.mistMesh);
 
@@ -252,11 +291,16 @@ export class WeatherSystem3D {
     this.handles.scene.add(this.splashMesh);
   }
 
-  public reset(startKind: WeatherKind = 'clear') {
+  public reset(startKind: WeatherKind = 'clear', biomeId: TourBiomeId = 'midnight_pine') {
     this.currentKind = startKind;
+    this.currentBiome = biomeId;
     this.cycleTimer = 22 + Math.random() * 8;
     this.lightningTimer = 6 + Math.random() * 6;
     this.lightningFlash = 0;
+  }
+
+  public setBiome(biomeId: TourBiomeId) {
+    this.currentBiome = biomeId;
   }
 
   public getWeather(): WeatherKind {
@@ -296,14 +340,28 @@ export class WeatherSystem3D {
     }
 
     const target = WEATHER_PROFILES[this.currentKind];
+    const biome = TOUR_BIOMES[this.currentBiome];
 
-    // Smoothly interpolate atmospheric parameters
-    this.fogDensity = THREE.MathUtils.damp(this.fogDensity, target.fogDensity, 0.9, dt);
-    this.baseSkyColor.lerp(target.skyColor, 1 - Math.exp(-0.9 * dt));
+    // Combine biome base atmosphere with active weather condition
+    const targetFogDensity = biome.fogDensity * target.fogBiomeMult + target.fogDensityOffset;
+    const targetMistOpacity = Math.max(target.mistOpacity, BIOME_MIST_BASE[this.currentBiome]);
+
+    _biomeSky.set(biome.skyColor);
+    _biomeFog.set(biome.fogColor);
+    _targetSky.copy(_biomeSky).lerp(target.skyColor, target.skyWeight);
+    _targetFog.copy(_biomeFog).lerp(target.fogTintColor, target.fogTintWeight);
+    // Mist bank plumes glow softly in a brightened tint of the biome's fog
+    _targetMistTint.copy(_targetFog).lerp(_brightMistBase, 0.58);
+
+    const colorBlend = 1 - Math.exp(-0.95 * dt);
+    this.fogDensity = THREE.MathUtils.damp(this.fogDensity, targetFogDensity, 0.95, dt);
+    this.baseSkyColor.lerp(_targetSky, colorBlend);
+    this.baseFogColor.lerp(_targetFog, colorBlend);
+    this.mistTintColor.lerp(_targetMistTint, colorBlend);
     this.moonIntensity = THREE.MathUtils.damp(this.moonIntensity, target.moonIntensity, 1.1, dt);
     this.hemiIntensity = THREE.MathUtils.damp(this.hemiIntensity, target.hemiIntensity, 1.1, dt);
     this.waveAmp = THREE.MathUtils.damp(this.waveAmp, target.waveAmp, 0.85, dt);
-    this.mistOpacity = THREE.MathUtils.damp(this.mistOpacity, target.mistOpacity, 1.0, dt);
+    this.mistOpacity = THREE.MathUtils.damp(this.mistOpacity, targetMistOpacity, 1.0, dt);
     this.rainOpacity = THREE.MathUtils.damp(this.rainOpacity, target.rainOpacity, 1.2, dt);
     this.rainSpeed = THREE.MathUtils.damp(this.rainSpeed, target.rainSpeed, 1.5, dt);
     this.windX = THREE.MathUtils.damp(this.windX, target.windX, 1.2, dt);
@@ -325,15 +383,17 @@ export class WeatherSystem3D {
     // Apply fog, sky, lights, and water wave uniforms
     const flashBoost = this.lightningFlash > 0.45 ? this.lightningFlash : this.lightningFlash * 0.35;
     _skyTmp.copy(this.baseSkyColor).lerp(_flashColor, flashBoost * 0.72);
+    _fogTmp.copy(this.baseFogColor).lerp(_flashColor, flashBoost * 0.55);
 
     if (this.handles.scene.background instanceof THREE.Color) {
       this.handles.scene.background.copy(_skyTmp);
     }
     if (this.handles.scene.fog instanceof THREE.FogExp2) {
-      this.handles.scene.fog.color.copy(_skyTmp);
+      this.handles.scene.fog.color.copy(_fogTmp);
       this.handles.scene.fog.density = this.fogDensity;
     }
 
+    this.mistMat.color.copy(this.mistTintColor);
     this.handles.moonLight.intensity = this.moonIntensity + flashBoost * 3.8;
     this.handles.hemiLight.intensity = this.hemiIntensity + flashBoost * 1.1;
     this.handles.moonMat.opacity = Math.max(0.08, this.starsOpacity);

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { MONSTER_EYE_COLORS } from './constants';
 import { LakeMaterials } from './materials3d';
 import { MonsterKind } from './types';
 
@@ -263,6 +264,11 @@ export interface MonsterMeshRig {
   accentMat: THREE.MeshStandardMaterial;
   eyeMat: THREE.MeshStandardMaterial;
   telegraphLine: THREE.Mesh | null;
+  electricRing: THREE.Mesh | null;
+  armorShield?: THREE.Object3D | null;
+  auraDome?: THREE.Mesh | null;
+  chronoRings?: THREE.Object3D[];
+  cloakMats?: THREE.Material[];
 }
 
 export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
@@ -270,69 +276,114 @@ export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
   const segments: THREE.Object3D[] = [];
   let tail: THREE.Object3D | null = null;
   let telegraphLine: THREE.Mesh | null = null;
+  let electricRing: THREE.Mesh | null = null;
+  let armorShield: THREE.Object3D | null = null;
+  let auraDome: THREE.Mesh | null = null;
+  const chronoRings: THREE.Object3D[] = [];
+  const cloakMats: THREE.Material[] = [];
 
   let primaryHex = '#1f423b';
   let accentHex = '#488878';
-  let eyeHex = '#fbbf24';
+  const eyeHex = MONSTER_EYE_COLORS[kind];
 
   if (kind === 'catfish') {
     primaryHex = '#232e3c';
     accentHex = '#52677f';
-    eyeHex = '#e2e8f0';
   } else if (kind === 'eel') {
     primaryHex = '#143146';
     accentHex = '#38bdf8';
-    eyeHex = '#7dd3fc';
   } else if (kind === 'puffer') {
     primaryHex = '#4b1f27';
     accentHex = '#ef4444';
-    eyeHex = '#fca5a5';
   } else if (kind === 'minnow') {
     primaryHex = '#2e3848';
     accentHex = '#f87171';
-    eyeHex = '#fca5a5';
   } else if (kind === 'leviathan') {
     primaryHex = '#0c272c';
     accentHex = '#10b981';
-    eyeHex = '#bef264';
   } else if (kind === 'croc_gena') {
     primaryHex = '#15803d';
     accentHex = '#b91c1c'; // Iconic villainous red coat!
-    eyeHex = '#facc15';
   } else if (kind === 'ersh') {
     primaryHex = '#4a5d23';
     accentHex = '#eab308';
-    eyeHex = '#fb923c';
   } else if (kind === 'lin') {
     primaryHex = '#14532d';
     accentHex = '#84cc16';
-    eyeHex = '#bef264';
   } else if (kind === 'peskar') {
     primaryHex = '#92400e';
     accentHex = '#fde047';
-    eyeHex = '#fef08a';
   } else if (kind === 'karas') {
     primaryHex = '#7c2d12';
     accentHex = '#fb923c';
-    eyeHex = '#f87171';
+  } else if (kind === 'glass_ghost') {
+    primaryHex = '#bae6fd';
+    accentHex = '#e0f2fe';
+  } else if (kind === 'mirage_ray') {
+    primaryHex = '#0f3f52';
+    accentHex = '#2dd4bf';
+  } else if (kind === 'chrono_morok') {
+    primaryHex = '#2b133d';
+    accentHex = '#f43f5e';
+  } else if (kind === 'sky_jelly') {
+    primaryHex = '#0284c7';
+    accentHex = '#38bdf8';
+  } else if (kind === 'turtle_rift') {
+    primaryHex = '#1b3b2b';
+    accentHex = '#84cc16';
   }
 
+  const isTranslucentAlien = kind === 'glass_ghost' || kind === 'sky_jelly';
   const bodyMat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(primaryHex),
-    roughness: 0.42,
-    metalness: 0.18,
+    roughness: isTranslucentAlien ? 0.14 : 0.42,
+    metalness: isTranslucentAlien ? 0.08 : 0.18,
+    transparent: isTranslucentAlien,
+    opacity: kind === 'glass_ghost' ? 0.62 : kind === 'sky_jelly' ? 0.72 : 1,
+    emissive:
+      kind === 'glass_ghost' || kind === 'sky_jelly' || kind === 'chrono_morok'
+        ? new THREE.Color(primaryHex)
+        : new THREE.Color('#000000'),
+    emissiveIntensity: kind === 'glass_ghost' ? 0.35 : kind === 'sky_jelly' ? 0.45 : kind === 'chrono_morok' ? 0.25 : 0,
   });
 
   const accentMat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(accentHex),
-    roughness: 0.35,
-    metalness: 0.28,
+    roughness: 0.32,
+    metalness: 0.3,
+    transparent: isTranslucentAlien,
+    opacity: kind === 'glass_ghost' ? 0.72 : kind === 'sky_jelly' ? 0.8 : 1,
     emissive:
-      kind === 'eel' || kind === 'leviathan' || kind === 'lin'
+      kind === 'eel' ||
+      kind === 'leviathan' ||
+      kind === 'lin' ||
+      kind === 'mirage_ray' ||
+      kind === 'chrono_morok' ||
+      kind === 'sky_jelly' ||
+      kind === 'glass_ghost'
         ? new THREE.Color(accentHex)
         : new THREE.Color('#000000'),
-    emissiveIntensity: kind === 'eel' ? 0.55 : kind === 'leviathan' ? 0.4 : kind === 'lin' ? 0.28 : 0,
+    emissiveIntensity:
+      kind === 'eel'
+        ? 0.55
+        : kind === 'sky_jelly'
+          ? 0.9
+          : kind === 'chrono_morok'
+            ? 0.85
+            : kind === 'mirage_ray'
+              ? 0.6
+              : kind === 'leviathan'
+                ? 0.4
+                : kind === 'lin' || kind === 'glass_ghost'
+                  ? 0.35
+                  : 0,
   });
+
+  if (kind === 'glass_ghost' || kind === 'mirage_ray') {
+    bodyMat.transparent = true;
+    accentMat.transparent = true;
+    cloakMats.push(bodyMat, accentMat);
+  }
 
   const eyeMat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(eyeHex),
@@ -340,6 +391,10 @@ export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
     emissiveIntensity: 2.2,
     roughness: 0.15,
   });
+  if (kind === 'glass_ghost' || kind === 'mirage_ray') {
+    eyeMat.transparent = true;
+    cloakMats.push(eyeMat);
+  }
 
   if (kind === 'croc_gena') {
     // Злодейский крокодил Гена: green croc snout with white teeth, red coat, dark bowler hat, articulated tail!
@@ -432,12 +487,34 @@ export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
         fin.position.set(0, r + 0.1, 0);
         fin.rotation.x = -0.3;
         seg.add(fin);
+
+        if (i <= 4) {
+          const organRing = new THREE.Mesh(
+            new THREE.TorusGeometry(r * 1.05, 0.045, 6, 14),
+            eyeMat
+          );
+          seg.add(organRing);
+        }
       }
 
       seg.position.set(0, 0.15, -i * 0.52);
       root.add(seg);
       segments.push(seg);
     }
+
+    const elecGeo = new THREE.RingGeometry(0.85, 1.2, 28);
+    elecGeo.rotateX(-Math.PI / 2);
+    const elecMat = new THREE.MeshBasicMaterial({
+      color: '#00e5ff',
+      transparent: true,
+      opacity: 0.72,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    electricRing = new THREE.Mesh(elecGeo, elecMat);
+    electricRing.position.y = 0.18;
+    electricRing.visible = false;
+    root.add(electricRing);
   } else if (kind === 'leviathan') {
     const head = new THREE.Group();
     const skull = new THREE.Mesh(new THREE.SphereGeometry(1.55, 14, 12), bodyMat);
@@ -504,12 +581,25 @@ export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
     telegraphLine.visible = false;
     root.add(telegraphLine);
   } else if (kind === 'puffer') {
+    const venomMat = new THREE.MeshStandardMaterial({
+      color: '#d946ef',
+      emissive: '#a3e635',
+      emissiveIntensity: 1.45,
+      roughness: 0.25,
+    });
     const core = new THREE.Mesh(new THREE.SphereGeometry(0.76, 14, 12), bodyMat);
     core.position.y = 0.25;
     core.castShadow = true;
     root.add(core);
 
-    const spineGeo = new THREE.ConeGeometry(0.11, 0.52, 5);
+    // Aposematic warning belt around equator
+    const warningBand = new THREE.Mesh(new THREE.TorusGeometry(0.75, 0.06, 6, 20), venomMat);
+    warningBand.rotation.x = Math.PI / 2;
+    warningBand.position.y = 0.24;
+    root.add(warningBand);
+
+    const spineGeo = new THREE.ConeGeometry(0.11, 0.56, 5);
+    const glandGeo = new THREE.SphereGeometry(0.09, 6, 6);
     for (let s = 0; s < 14; s++) {
       const phi = Math.acos(1 - (2 * (s + 0.5)) / 14);
       const theta = Math.PI * (1 + Math.sqrt(5)) * s;
@@ -519,9 +609,13 @@ export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
         Math.cos(phi),
         Math.sin(phi) * Math.sin(theta)
       );
-      spike.position.copy(dir).multiplyScalar(0.75).add(new THREE.Vector3(0, 0.25, 0));
+      spike.position.copy(dir).multiplyScalar(0.76).add(new THREE.Vector3(0, 0.25, 0));
       spike.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
       root.add(spike);
+
+      const gland = new THREE.Mesh(glandGeo, venomMat);
+      gland.position.copy(dir).multiplyScalar(0.68).add(new THREE.Vector3(0, 0.25, 0));
+      root.add(gland);
     }
 
     const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 8), eyeMat);
@@ -530,24 +624,36 @@ export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
     eyeR.position.x = 0.35;
     root.add(eyeL, eyeR);
   } else if (kind === 'ersh') {
-    // Ёрш Передрёш: spiky olive-bronze hull with tall thorny dorsal crest and spiked gill plates
+    // Ёрш Передрёш: spiky olive-bronze hull with tall thorny dorsal crest, venom tips & rigid fin-ray spines
+    const venomTipMat = new THREE.MeshStandardMaterial({
+      color: '#c084fc',
+      emissive: '#9333ea',
+      emissiveIntensity: 1.3,
+      roughness: 0.28,
+    });
     const torso = new THREE.Mesh(new THREE.SphereGeometry(0.58, 12, 10), bodyMat);
     torso.scale.set(0.95, 0.88, 1.48);
     torso.position.set(0, 0.28, 0);
     torso.castShadow = true;
     root.add(torso);
 
-    // 6-spine spiky dorsal ruffe crest
-    const spineGeo = new THREE.ConeGeometry(0.11, 0.52, 4);
+    // 6-spine spiky dorsal ruffe crest with glowing venom tips
+    const spineGeo = new THREE.ConeGeometry(0.11, 0.54, 4);
+    const glandGeo = new THREE.SphereGeometry(0.065, 6, 6);
     for (let s = 0; s < 6; s++) {
       const sp = new THREE.Mesh(spineGeo, accentMat);
       sp.position.set(0, 0.72 - s * 0.03, 0.45 - s * 0.23);
       sp.rotation.x = -0.35 - s * 0.05;
       root.add(sp);
+
+      const tip = new THREE.Mesh(glandGeo, venomTipMat);
+      tip.position.set(0, 0.96 - s * 0.03, 0.36 - s * 0.23);
+      root.add(tip);
     }
 
-    // Flared spiky cheek gill spines
-    const cheekGeo = new THREE.ConeGeometry(0.12, 0.48, 4);
+    // Flared spiky cheek gill spines & rigid pectoral fin-ray needles
+    const cheekGeo = new THREE.ConeGeometry(0.12, 0.5, 4);
+    const finRayGeo = new THREE.ConeGeometry(0.055, 0.58, 4);
     for (const side of [-1, 1]) {
       const cheek = new THREE.Mesh(cheekGeo, accentMat);
       cheek.position.set(side * 0.58, 0.26, 0.36);
@@ -559,6 +665,14 @@ export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
       pec.position.set(side * 0.52, 0.16, 0.02);
       pec.rotation.y = side * -0.45;
       root.add(pec);
+
+      for (let r = 0; r < 2; r++) {
+        const ray = new THREE.Mesh(finRayGeo, accentMat);
+        ray.position.set(side * 0.72, 0.18, 0.12 - r * 0.18);
+        ray.rotation.z = -side * 1.38;
+        ray.rotation.y = side * -0.35;
+        root.add(ray);
+      }
     }
 
     tail = new THREE.Group();
@@ -575,28 +689,55 @@ export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
     const eyeR = eyeL.clone();
     eyeR.position.x = 0.28;
     root.add(eyeL, eyeR);
+
+    // Acoustic resonance pulse ring for Ersh
+    const resGeo = new THREE.RingGeometry(0.95, 1.25, 24);
+    resGeo.rotateX(-Math.PI / 2);
+    const resMat = new THREE.MeshBasicMaterial({
+      color: '#fb923c',
+      transparent: true,
+      opacity: 0.65,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    electricRing = new THREE.Mesh(resGeo, resMat);
+    electricRing.position.y = 0.24;
+    electricRing.visible = false;
+    root.add(electricRing);
   } else if (kind === 'lin') {
-    // Линь Жминь: thick plump swamp-emerald grazer with broad rounded paddle fins & mouth barbels
+    // Линь Жминь: thick plump swamp-emerald grazer with bright aposematic stripes & glowing venom glands
+    const venomSacMat = new THREE.MeshStandardMaterial({
+      color: '#bef264',
+      emissive: '#84cc16',
+      emissiveIntensity: 1.6,
+      roughness: 0.2,
+    });
     const torso = new THREE.Mesh(new THREE.SphereGeometry(0.76, 14, 12), bodyMat);
     torso.scale.set(1.05, 0.92, 1.45);
     torso.position.set(0, 0.32, 0);
     torso.castShadow = true;
     root.add(torso);
 
-    // Rounded thick lime-green dorsal crest & belly ridge
-    const dorsal = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.22, 0.92, 8), accentMat);
+    // Rounded thick lime-green dorsal crest & bright warning cheek poison sacs
+    const dorsal = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.22, 0.92, 8), venomSacMat);
     dorsal.rotation.x = Math.PI / 2;
     dorsal.position.set(0, 0.92, -0.05);
     root.add(dorsal);
 
-    // Wide rounded paddle fins
+    // Wide rounded paddle fins + venom gland sacs
     const finGeo = new THREE.SphereGeometry(0.36, 8, 8);
     finGeo.scale(1.4, 0.22, 0.85);
+    const sacGeo = new THREE.SphereGeometry(0.16, 8, 8);
     for (const side of [-1, 1]) {
       const fin = new THREE.Mesh(finGeo, accentMat);
       fin.position.set(side * 0.78, 0.2, 0.16);
       fin.rotation.y = side * -0.42;
       root.add(fin);
+
+      const sac = new THREE.Mesh(sacGeo, venomSacMat);
+      sac.scale.set(0.8, 0.9, 1.4);
+      sac.position.set(side * 0.68, 0.44, 0.28);
+      root.add(sac);
 
       // Fleshy mouth barbels
       const barbel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.015, 0.45, 5), accentMat);
@@ -668,29 +809,56 @@ export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
     eyeR.position.x = 0.22;
     root.add(eyeL, eyeR);
   } else if (kind === 'karas') {
-    // Карась Вырубась: tall copper-bronze disc fish with heavy forehead ram crest & orange paddles
+    // Карась Вырубась: tall copper-bronze disc fish with overlapping frontal mineral armor plates
+    const plateMat = new THREE.MeshStandardMaterial({
+      color: '#fde047',
+      roughness: 0.22,
+      metalness: 0.78,
+    });
     const torso = new THREE.Mesh(new THREE.SphereGeometry(0.68, 14, 12), bodyMat);
     torso.scale.set(0.74, 1.18, 1.32);
     torso.position.set(0, 0.44, 0);
     torso.castShadow = true;
     root.add(torso);
 
-    // Armored battering forehead plate
-    const ramCrest = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.44, 0.46), accentMat);
-    ramCrest.position.set(0, 0.52, 0.72);
+    // Overlapping frontal living armor shield plates (animated when exposed vs closed)
+    armorShield = new THREE.Group();
+    const ramCrest = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.54, 0.46), plateMat);
+    ramCrest.position.set(0, 0.52, 0.74);
     ramCrest.rotation.x = 0.35;
-    root.add(ramCrest);
+    armorShield.add(ramCrest);
+    for (const side of [-1, 1]) {
+      const cheekPlate = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.58, 0.72), plateMat);
+      cheekPlate.position.set(side * 0.44, 0.46, 0.42);
+      cheekPlate.rotation.y = side * 0.35;
+      armorShield.add(cheekPlate);
+    }
+    root.add(armorShield);
 
     const dorsal = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.42, 0.72), accentMat);
     dorsal.position.set(0, 1.16, -0.1);
     dorsal.rotation.x = -0.25;
     root.add(dorsal);
 
+    // Rigid dorsal fin-ray spikes on Karas
+    const kRayGeo = new THREE.ConeGeometry(0.06, 0.44, 4);
+    for (let kr = 0; kr < 3; kr++) {
+      const ray = new THREE.Mesh(kRayGeo, accentMat);
+      ray.position.set(0, 1.4, 0.16 - kr * 0.25);
+      ray.rotation.x = -0.35;
+      root.add(ray);
+    }
+
     for (const side of [-1, 1]) {
       const pec = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.06, 0.38), accentMat);
       pec.position.set(side * 0.54, 0.26, 0.2);
       pec.rotation.y = side * -0.4;
       root.add(pec);
+
+      const spur = new THREE.Mesh(kRayGeo, accentMat);
+      spur.position.set(side * 0.78, 0.26, 0.22);
+      spur.rotation.z = -side * 1.45;
+      root.add(spur);
     }
 
     tail = new THREE.Group();
@@ -721,6 +889,255 @@ export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
     telegraphLine = new THREE.Mesh(teleGeo, teleMat);
     telegraphLine.visible = false;
     root.add(telegraphLine);
+  } else if (kind === 'glass_ghost') {
+    // Стеклянный Призрак: translucent optical-crystal hull with skeletal spine ribs & silver eyes
+    const coreMat = new THREE.MeshStandardMaterial({
+      color: '#7dd3fc',
+      emissive: '#38bdf8',
+      emissiveIntensity: 0.85,
+      roughness: 0.12,
+      transparent: true,
+      opacity: 0.68,
+    });
+    cloakMats.push(coreMat);
+
+    const torso = new THREE.Mesh(new THREE.SphereGeometry(0.56, 12, 10), bodyMat);
+    torso.scale.set(0.65, 0.92, 1.78);
+    torso.position.set(0, 0.28, 0);
+    root.add(torso);
+
+    // Glowing inner crystal spine
+    const spine = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.04, 1.45, 6), coreMat);
+    spine.rotation.x = Math.PI / 2;
+    spine.position.set(0, 0.3, 0);
+    root.add(spine);
+
+    for (let r = 0; r < 4; r++) {
+      const rib = new THREE.Mesh(new THREE.TorusGeometry(0.24 - r * 0.03, 0.025, 5, 10), coreMat);
+      rib.position.set(0, 0.28, 0.38 - r * 0.28);
+      root.add(rib);
+    }
+
+    for (const side of [-1, 1]) {
+      const wing = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.9, 4), accentMat);
+      wing.position.set(side * 0.56, 0.22, 0.05);
+      wing.rotation.z = -side * 1.4;
+      wing.rotation.y = side * 0.45;
+      root.add(wing);
+    }
+
+    tail = new THREE.Group();
+    tail.position.set(0, 0.28, -0.95);
+    const tailBlade = new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.86, 4), accentMat);
+    tailBlade.rotation.x = -Math.PI / 2;
+    tailBlade.scale.set(0.18, 1, 1.35);
+    tailBlade.position.z = -0.32;
+    tail.add(tailBlade);
+    root.add(tail);
+
+    const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), eyeMat);
+    eyeL.position.set(-0.2, 0.4, 0.68);
+    const eyeR = eyeL.clone();
+    eyeR.position.x = 0.2;
+    root.add(eyeL, eyeR);
+  } else if (kind === 'mirage_ray') {
+    // Скат Мираж: wide bioluminescent turquoise manta ray with swept gliding wings & whip tail
+    const disc = new THREE.Mesh(new THREE.SphereGeometry(0.66, 12, 10), bodyMat);
+    disc.scale.set(1.42, 0.34, 1.25);
+    disc.position.set(0, 0.18, 0.08);
+    disc.castShadow = true;
+    root.add(disc);
+
+    for (const side of [-1, 1]) {
+      const wing = new THREE.Mesh(new THREE.ConeGeometry(0.75, 1.45, 4), bodyMat);
+      wing.position.set(side * 0.92, 0.16, 0.02);
+      wing.rotation.z = -side * Math.PI / 2;
+      wing.scale.set(0.32, 1.0, 0.88);
+      wing.castShadow = true;
+      root.add(wing);
+
+      const wingEdge = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.05, 0.12), accentMat);
+      wingEdge.position.set(side * 0.88, 0.2, 0.34);
+      wingEdge.rotation.y = side * -0.45;
+      root.add(wingEdge);
+
+      const cephalic = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.42, 5), accentMat);
+      cephalic.position.set(side * 0.34, 0.18, 0.96);
+      cephalic.rotation.x = Math.PI / 2;
+      root.add(cephalic);
+    }
+
+    tail = new THREE.Group();
+    tail.position.set(0, 0.16, -0.78);
+    const whip = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.015, 1.35, 6), accentMat);
+    whip.rotation.x = Math.PI / 2;
+    whip.position.z = -0.65;
+    tail.add(whip);
+    root.add(tail);
+
+    const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), eyeMat);
+    eyeL.position.set(-0.34, 0.3, 0.64);
+    const eyeR = eyeL.clone();
+    eyeR.position.x = 0.34;
+    root.add(eyeL, eyeR);
+  } else if (kind === 'chrono_morok') {
+    // Хроно-Морок: deep-abyss temporal stalker with dual rotating rose-magenta chrono-rings & lure
+    const torso = new THREE.Mesh(new THREE.SphereGeometry(0.68, 12, 10), bodyMat);
+    torso.scale.set(0.95, 0.92, 1.45);
+    torso.position.set(0, 0.34, 0);
+    torso.castShadow = true;
+    root.add(torso);
+
+    // Temporal lure & floating chrono-rings
+    const ringMat = new THREE.MeshStandardMaterial({
+      color: '#fb7185',
+      emissive: '#f43f5e',
+      emissiveIntensity: 1.55,
+      roughness: 0.2,
+    });
+    const ring1 = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.045, 6, 24), ringMat);
+    ring1.position.set(0, 0.38, 0);
+    ring1.rotation.x = 0.55;
+    const ring2 = new THREE.Mesh(new THREE.TorusGeometry(1.16, 0.035, 6, 24), ringMat);
+    ring2.position.set(0, 0.38, 0);
+    ring2.rotation.y = 0.7;
+    ring2.rotation.x = -0.5;
+    root.add(ring1, ring2);
+    chronoRings.push(ring1, ring2);
+
+    // Translucent time bubble aura around Chrono-Morok
+    const bubbleGeo = new THREE.SphereGeometry(1.45, 16, 12);
+    const bubbleMat = new THREE.MeshBasicMaterial({
+      color: '#f43f5e',
+      transparent: true,
+      opacity: 0.14,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    auraDome = new THREE.Mesh(bubbleGeo, bubbleMat);
+    auraDome.position.set(0, 0.38, 0);
+    auraDome.visible = false;
+    root.add(auraDome);
+
+    tail = new THREE.Group();
+    tail.position.set(0, 0.32, -0.94);
+    const tailBlade = new THREE.Mesh(new THREE.ConeGeometry(0.36, 0.72, 5), accentMat);
+    tailBlade.rotation.x = -Math.PI / 2;
+    tailBlade.scale.set(0.3, 1, 1.3);
+    tailBlade.position.z = -0.26;
+    tail.add(tailBlade);
+    root.add(tail);
+
+    const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 8), eyeMat);
+    eyeL.position.set(-0.3, 0.52, 0.72);
+    const eyeR = eyeL.clone();
+    eyeR.position.x = 0.3;
+    root.add(eyeL, eyeR);
+  } else if (kind === 'sky_jelly') {
+    // Медуза Небоплав: hovers above the water on an illuminated gas dome with dangling electric tentacles
+    const domeHeight = 2.05;
+    const bell = new THREE.Mesh(
+      new THREE.SphereGeometry(0.88, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.62),
+      bodyMat
+    );
+    bell.position.set(0, domeHeight, 0);
+    bell.castShadow = true;
+    root.add(bell);
+
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.82, 0.06, 8, 22), accentMat);
+    rim.rotation.x = Math.PI / 2;
+    rim.position.set(0, domeHeight + 0.04, 0);
+    root.add(rim);
+
+    const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.34, 0), eyeMat);
+    core.position.set(0, domeHeight + 0.25, 0);
+    root.add(core);
+
+    // 6 dangling tentacles reaching toward lake surface
+    for (let t = 0; t < 6; t++) {
+      const a = (t / 6) * Math.PI * 2;
+      const tent = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.018, 1.85, 6), accentMat);
+      tent.position.set(Math.cos(a) * 0.5, domeHeight - 0.9, Math.sin(a) * 0.5);
+      root.add(tent);
+      segments.push(tent);
+    }
+
+    const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 8), eyeMat);
+    eyeL.position.set(-0.34, domeHeight + 0.16, 0.66);
+    const eyeR = eyeL.clone();
+    eyeR.position.x = 0.34;
+    root.add(eyeL, eyeR);
+
+    const elecGeo = new THREE.RingGeometry(0.9, 1.25, 24);
+    elecGeo.rotateX(-Math.PI / 2);
+    const elecMat = new THREE.MeshBasicMaterial({
+      color: '#38bdf8',
+      transparent: true,
+      opacity: 0.72,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    electricRing = new THREE.Mesh(elecGeo, elecMat);
+    electricRing.position.y = 0.22;
+    electricRing.visible = false;
+    root.add(electricRing);
+  } else if (kind === 'turtle_rift') {
+    // Черепахор Разлом: mossy basalt reef-shell turtle with snapping armor plates
+    const mossMat = new THREE.MeshStandardMaterial({ color: '#3f6212', roughness: 0.88 });
+    const shell = new THREE.Mesh(
+      new THREE.SphereGeometry(1.08, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.56),
+      bodyMat
+    );
+    shell.scale.set(1.05, 0.72, 1.22);
+    shell.position.set(0, 0.12, 0);
+    shell.castShadow = true;
+    root.add(shell);
+
+    // Mossy reef ridges on top
+    for (let r = 0; r < 3; r++) {
+      const crest = new THREE.Mesh(new THREE.DodecahedronGeometry(0.32 - r * 0.05, 0), mossMat);
+      crest.position.set((r - 1) * 0.32, 0.76, (r % 2 === 0 ? 0.12 : -0.22));
+      root.add(crest);
+    }
+
+    // Closing frontal armor plates
+    armorShield = new THREE.Group();
+    for (const side of [-1, 1]) {
+      const plate = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.56, 0.54), accentMat);
+      plate.position.set(side * 0.48, 0.36, 0.92);
+      plate.rotation.y = side * -0.4;
+      armorShield.add(plate);
+    }
+    root.add(armorShield);
+
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.34, 10, 8), bodyMat);
+    head.scale.set(0.95, 0.78, 1.3);
+    head.position.set(0, 0.34, 1.28);
+    root.add(head);
+
+    for (const side of [-1, 1]) {
+      const flipF = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.1, 0.42), bodyMat);
+      flipF.position.set(side * 1.12, 0.14, 0.55);
+      flipF.rotation.y = side * -0.45;
+      const flipB = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.08, 0.32), bodyMat);
+      flipB.position.set(side * 0.88, 0.12, -0.78);
+      flipB.rotation.y = side * 0.5;
+      root.add(flipF, flipB);
+    }
+
+    tail = new THREE.Group();
+    tail.position.set(0, 0.2, -1.25);
+    const tailTip = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.55, 5), bodyMat);
+    tailTip.rotation.x = -Math.PI / 2;
+    tailTip.position.z = -0.2;
+    tail.add(tailTip);
+    root.add(tail);
+
+    const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), eyeMat);
+    eyeL.position.set(-0.22, 0.46, 1.48);
+    const eyeR = eyeL.clone();
+    eyeR.position.x = 0.22;
+    root.add(eyeL, eyeR);
   } else {
     // Pike, Catfish, Minnow
     const scale = kind === 'catfish' ? 1.4 : kind === 'minnow' ? 0.58 : 1.0;
@@ -737,6 +1154,28 @@ export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
     dorsal.position.set(0, 0.58 * scale, -0.1 * scale);
     dorsal.rotation.x = -0.45;
     root.add(dorsal);
+
+    // Extra sharp dorsal & pectoral fin rays for Pike & Catfish (plus luminous spinal stripes for Pike!)
+    if (kind === 'pike' || kind === 'catfish') {
+      const rayGeo = new THREE.ConeGeometry(0.055 * scale, 0.46 * scale, 4);
+      for (let r = 0; r < 2; r++) {
+        const dRay = new THREE.Mesh(rayGeo, accentMat);
+        dRay.position.set(0, 0.55 * scale, (-0.32 - r * 0.22) * scale);
+        dRay.rotation.x = -0.5;
+        root.add(dRay);
+      }
+      if (kind === 'pike') {
+        const stripeMat = new THREE.MeshStandardMaterial({
+          color: '#fef08a',
+          emissive: '#f59e0b',
+          emissiveIntensity: 1.5,
+          roughness: 0.25,
+        });
+        const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 1.4), stripeMat);
+        stripe.position.set(0, 0.6, 0.05);
+        root.add(stripe);
+      }
+    }
 
     const pecGeo = new THREE.BoxGeometry(0.55 * scale, 0.05 * scale, 0.28 * scale);
     const pecL = new THREE.Mesh(pecGeo, accentMat);
@@ -797,6 +1236,11 @@ export function createMonsterModel(kind: MonsterKind): MonsterMeshRig {
     accentMat,
     eyeMat,
     telegraphLine,
+    electricRing,
+    armorShield,
+    auraDome,
+    chronoRings,
+    cloakMats,
   };
 }
 

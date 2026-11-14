@@ -126,7 +126,7 @@ export function GameOverModal({
             className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200/10 bg-transparent px-5 py-2.5 text-xs font-semibold text-slate-300 transition-colors hover:bg-slate-800/60 hover:text-white focus-visible:outline-2 focus-visible:outline-amber-400 whitespace-nowrap"
           >
             <Home className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>Выйти в меню</span>
+            <span>{isPaused ? 'Сохранить и выйти в меню' : 'Выйти в меню'}</span>
           </button>
         </div>
       </div>

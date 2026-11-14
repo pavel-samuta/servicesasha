@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Award, Bomb, Camera, MessageSquareQuote, Zap } from 'lucide-react';
 import { GameOverModal } from './components/GameOverModal';
+import { PlayerAccountModal } from './components/PlayerAccountModal';
 import { TitleMenu } from './components/TitleMenu';
 import { TopHud } from './components/TopHud';
 import { UpgradeShopModal } from './components/UpgradeShopModal';
@@ -12,9 +13,21 @@ import {
   savePlayerRecords,
 } from './game/achievements';
 import { soundEngine } from './game/audio';
-import { BASE_PLAYER_STATS, HIGH_SCORE_STORAGE_KEY } from './game/constants';
+import { BASE_PLAYER_STATS } from './game/constants';
 import { BlackLakeEngine2D } from './game/engine2d';
 import { BlackLakeEngine3D } from './game/engine3d';
+import {
+  getGuestFallbackHighScore,
+  loadGuestSavedRun,
+  logoutPlayerAccount,
+  PlayerAccountSession,
+  restoreActiveLocalSession,
+  sanitizeSavedRun,
+  SavedRunSnapshot,
+  saveGuestSavedRun,
+  subscribeFirebasePlayerAuth,
+  syncCloudPlayerMemory,
+} from './game/playerStorage';
 import { getTourDefinition, TOTAL_TOURS, TOUR_BIOMES } from './game/tours';
 import {
   BlackLakeEngine,
@@ -50,6 +63,8 @@ function createInitialHud(highScore: number): HudSnapshot {
     depthCharges: BASE_PLAYER_STATS.depthCharges,
     maxDepthCharges: BASE_PLAYER_STATS.maxDepthCharges,
     overdriveTimer: 0,
+    poisonTimer: 0,
+    stunTimer: 0,
     bossName: null,
     bossHp: 0,
     bossMaxHp: 0,
@@ -74,16 +89,20 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   const [autoFire, setAutoFire] = useState(false);
   const [webglError, setWebglError] = useState(false);
+  const [accountModalOpen, setAccountModalOpen] = useState(false);
 
+  const [playerSession, setPlayerSession] = useState<PlayerAccountSession | null>(() =>
+    restoreActiveLocalSession()
+  );
   const [records, setRecords] = useState<PlayerRecords>(() => {
-    let legacyHigh = 0;
-    try {
-      const raw = localStorage.getItem(HIGH_SCORE_STORAGE_KEY);
-      legacyHigh = raw ? parseInt(raw, 10) || 0 : 0;
-    } catch {
-      legacyHigh = 0;
-    }
-    return loadPlayerRecords(legacyHigh);
+    const localSession = restoreActiveLocalSession();
+    if (localSession) return localSession.records;
+    return loadPlayerRecords(getGuestFallbackHighScore());
+  });
+  const [savedRun, setSavedRun] = useState<SavedRunSnapshot | null>(() => {
+    const localSession = restoreActiveLocalSession();
+    if (localSession) return localSession.savedRun;
+    return loadGuestSavedRun();
   });
 
   const [hud, setHud] = useState<HudSnapshot>(() => createInitialHud(records.highScore));
@@ -99,9 +118,19 @@ export default function App() {
   const gameStateRef = useRef<GameState>(gameState);
   gameStateRef.current = gameState;
 
+  const renderModeRef = useRef<RenderMode>(renderMode);
+  renderModeRef.current = renderMode;
+
+  const playerSessionRef = useRef<PlayerAccountSession | null>(playerSession);
+  playerSessionRef.current = playerSession;
+
   const recordsRef = useRef<PlayerRecords>(records);
   recordsRef.current = records;
 
+  const savedRunRef = useRef<SavedRunSnapshot | null>(savedRun);
+  savedRunRef.current = savedRun;
+
+  const syncTimerRef = useRef<number | null>(null);
   const lastRunKillsRef = useRef(0);
   const lastRunLeviathansRef = useRef(0);
   const lastRunCrocsRef = useRef(0);
@@ -116,66 +145,202 @@ export default function App() {
     active: false,
   });
 
-  const syncRecordsFromHud = useCallback((snapshot: HudSnapshot) => {
-    const killsDelta = Math.max(0, snapshot.monstersKilled - lastRunKillsRef.current);
-    const leviathansDelta = Math.max(0, snapshot.leviathansKilled - lastRunLeviathansRef.current);
-    const crocsDelta = Math.max(0, snapshot.crocsKilled - lastRunCrocsRef.current);
-    lastRunKillsRef.current = snapshot.monstersKilled;
-    lastRunLeviathansRef.current = snapshot.leviathansKilled;
-    lastRunCrocsRef.current = snapshot.crocsKilled;
+  const persistPlayerProgress = useCallback(
+    (nextRecords: PlayerRecords, nextSavedRun: SavedRunSnapshot | null, immediate = false) => {
+      recordsRef.current = nextRecords;
+      savedRunRef.current = nextSavedRun;
+      setRecords(nextRecords);
+      setSavedRun(nextSavedRun);
 
-    const killsByKindDelta: Partial<Record<MonsterKind, number>> = {};
-    let hasKindDelta = false;
-    for (const [k, rawCount] of Object.entries(snapshot.killsByKind || {})) {
-      const kind = k as MonsterKind;
-      const currentCount = Number(rawCount) || 0;
-      const prevCount = lastRunKillsByKindRef.current[kind] ?? 0;
-      const delta = Math.max(0, currentCount - prevCount);
-      if (delta > 0) {
-        killsByKindDelta[kind] = delta;
-        lastRunKillsByKindRef.current[kind] = currentCount;
-        hasKindDelta = true;
+      const active = playerSessionRef.current;
+      if (!active) {
+        savePlayerRecords(nextRecords);
+        saveGuestSavedRun(nextSavedRun);
+        return;
       }
-    }
 
-    const { next, newlyUnlocked } = applyRunProgressToRecords(recordsRef.current, {
-      score: snapshot.score,
-      wave: snapshot.wave,
-      runKills: snapshot.monstersKilled,
-      killsDelta,
-      leviathansDelta,
-      crocsDelta,
-      killsByKindDelta,
-      maxCombo: snapshot.maxCombo,
+      playerSessionRef.current = {
+        ...active,
+        records: nextRecords,
+        savedRun: nextSavedRun,
+      };
+      setPlayerSession(playerSessionRef.current);
+
+      if (syncTimerRef.current !== null) {
+        window.clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
+
+      if (immediate) {
+        void syncCloudPlayerMemory(active, nextRecords, nextSavedRun).catch((err) => {
+          console.error('Failed immediate player memory sync:', err);
+        });
+      } else {
+        syncTimerRef.current = window.setTimeout(() => {
+          syncTimerRef.current = null;
+          const current = playerSessionRef.current;
+          if (current) {
+            void syncCloudPlayerMemory(
+              current,
+              recordsRef.current,
+              savedRunRef.current
+            ).catch((err) => {
+              console.error('Failed debounced player memory sync:', err);
+            });
+          }
+        }, 2500);
+      }
+    },
+    []
+  );
+
+  // Listen to Firebase Auth state on boot & account switches
+  useEffect(() => {
+    const unsubscribe = subscribeFirebasePlayerAuth((cloudSession, authReady) => {
+      if (!authReady) return;
+      if (cloudSession) {
+        playerSessionRef.current = cloudSession;
+        recordsRef.current = cloudSession.records;
+        savedRunRef.current = cloudSession.savedRun;
+        setPlayerSession(cloudSession);
+        setRecords(cloudSession.records);
+        setSavedRun(cloudSession.savedRun);
+        setHud((prev) => ({ ...prev, highScore: cloudSession.records.highScore }));
+      } else {
+        const local = restoreActiveLocalSession();
+        if (local) {
+          playerSessionRef.current = local;
+          recordsRef.current = local.records;
+          savedRunRef.current = local.savedRun;
+          setPlayerSession(local);
+          setRecords(local.records);
+          setSavedRun(local.savedRun);
+          setHud((prev) => ({ ...prev, highScore: local.records.highScore }));
+        } else if (playerSessionRef.current?.kind === 'cloud') {
+          const guestRecords = loadPlayerRecords(getGuestFallbackHighScore());
+          const guestRun = loadGuestSavedRun();
+          playerSessionRef.current = null;
+          recordsRef.current = guestRecords;
+          savedRunRef.current = guestRun;
+          setPlayerSession(null);
+          setRecords(guestRecords);
+          setSavedRun(guestRun);
+          setHud((prev) => ({ ...prev, highScore: guestRecords.highScore }));
+        }
+      }
     });
-
-    const changed =
-      killsDelta > 0 ||
-      leviathansDelta > 0 ||
-      crocsDelta > 0 ||
-      hasKindDelta ||
-      next.highScore !== recordsRef.current.highScore ||
-      next.bestWave !== recordsRef.current.bestWave ||
-      next.bestCombo !== recordsRef.current.bestCombo ||
-      newlyUnlocked.length > 0;
-
-    if (changed) {
-      recordsRef.current = next;
-      setRecords(next);
-      savePlayerRecords(next);
-    }
-
-    if (newlyUnlocked.length > 0) {
-      setSessionUnlocked((prev) => [...prev, ...newlyUnlocked]);
-      setActiveToast(newlyUnlocked[newlyUnlocked.length - 1]);
-      if (toastTimerRef.current !== null) {
-        window.clearTimeout(toastTimerRef.current);
-      }
-      toastTimerRef.current = window.setTimeout(() => {
-        setActiveToast(null);
-      }, 3600);
-    }
+    return () => unsubscribe();
   }, []);
+
+  const handleAuthenticated = useCallback((nextSession: PlayerAccountSession) => {
+    if (syncTimerRef.current !== null) {
+      window.clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
+    playerSessionRef.current = nextSession;
+    recordsRef.current = nextSession.records;
+    savedRunRef.current = nextSession.savedRun;
+    setPlayerSession(nextSession);
+    setRecords(nextSession.records);
+    setSavedRun(nextSession.savedRun);
+    setHud((prev) => ({ ...prev, highScore: nextSession.records.highScore }));
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    if (syncTimerRef.current !== null) {
+      window.clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
+    const current = playerSessionRef.current;
+    if (current) {
+      await syncCloudPlayerMemory(current, recordsRef.current, savedRunRef.current).catch(() => undefined);
+    }
+    await logoutPlayerAccount();
+    const guestRecords = loadPlayerRecords(getGuestFallbackHighScore());
+    const guestRun = loadGuestSavedRun();
+    playerSessionRef.current = null;
+    recordsRef.current = guestRecords;
+    savedRunRef.current = guestRun;
+    setPlayerSession(null);
+    setRecords(guestRecords);
+    setSavedRun(guestRun);
+    setHud((prev) => ({ ...prev, highScore: guestRecords.highScore }));
+  }, []);
+
+  const buildSavedSnapshot = useCallback((waveOverride?: number): SavedRunSnapshot | null => {
+    if (!engineRef.current) return null;
+    const exported = engineRef.current.exportRunState();
+    return sanitizeSavedRun({
+      ...exported,
+      wave: waveOverride ?? exported.wave,
+      renderMode: renderModeRef.current,
+      savedAt: new Date().toISOString(),
+    });
+  }, []);
+
+  const syncRecordsFromHud = useCallback(
+    (snapshot: HudSnapshot, forceImmediate = false, overrideSavedRun?: SavedRunSnapshot | null) => {
+      const killsDelta = Math.max(0, snapshot.monstersKilled - lastRunKillsRef.current);
+      const leviathansDelta = Math.max(0, snapshot.leviathansKilled - lastRunLeviathansRef.current);
+      const crocsDelta = Math.max(0, snapshot.crocsKilled - lastRunCrocsRef.current);
+      lastRunKillsRef.current = snapshot.monstersKilled;
+      lastRunLeviathansRef.current = snapshot.leviathansKilled;
+      lastRunCrocsRef.current = snapshot.crocsKilled;
+
+      const killsByKindDelta: Partial<Record<MonsterKind, number>> = {};
+      let hasKindDelta = false;
+      for (const [k, rawCount] of Object.entries(snapshot.killsByKind || {})) {
+        const kind = k as MonsterKind;
+        const currentCount = Number(rawCount) || 0;
+        const prevCount = lastRunKillsByKindRef.current[kind] ?? 0;
+        const delta = Math.max(0, currentCount - prevCount);
+        if (delta > 0) {
+          killsByKindDelta[kind] = delta;
+          lastRunKillsByKindRef.current[kind] = currentCount;
+          hasKindDelta = true;
+        }
+      }
+
+      const { next, newlyUnlocked } = applyRunProgressToRecords(recordsRef.current, {
+        score: snapshot.score,
+        wave: snapshot.wave,
+        runKills: snapshot.monstersKilled,
+        killsDelta,
+        leviathansDelta,
+        crocsDelta,
+        killsByKindDelta,
+        maxCombo: snapshot.maxCombo,
+      });
+
+      const changed =
+        killsDelta > 0 ||
+        leviathansDelta > 0 ||
+        crocsDelta > 0 ||
+        hasKindDelta ||
+        next.highScore !== recordsRef.current.highScore ||
+        next.bestWave !== recordsRef.current.bestWave ||
+        next.bestCombo !== recordsRef.current.bestCombo ||
+        newlyUnlocked.length > 0;
+
+      const targetRun = overrideSavedRun !== undefined ? overrideSavedRun : savedRunRef.current;
+
+      if (changed || overrideSavedRun !== undefined || forceImmediate) {
+        persistPlayerProgress(next, targetRun, forceImmediate);
+      }
+
+      if (newlyUnlocked.length > 0) {
+        setSessionUnlocked((prev) => [...prev, ...newlyUnlocked]);
+        setActiveToast(newlyUnlocked[newlyUnlocked.length - 1]);
+        if (toastTimerRef.current !== null) {
+          window.clearTimeout(toastTimerRef.current);
+        }
+        toastTimerRef.current = window.setTimeout(() => {
+          setActiveToast(null);
+        }, 3600);
+      }
+    },
+    [persistPlayerProgress]
+  );
 
   // Initialize & dispose active 2D/3D Engine when entering gameplay or switching renderMode
   useEffect(() => {
@@ -204,24 +369,34 @@ export default function App() {
           lastRunLeviathansRef.current = 0;
           lastRunCrocsRef.current = 0;
           lastRunKillsByKindRef.current = {};
+        } else {
+          lastRunKillsRef.current = pendingCarryover.monstersKilled;
+          lastRunLeviathansRef.current = pendingCarryover.leviathansKilled;
+          lastRunCrocsRef.current = pendingCarryover.crocsKilled;
+          lastRunKillsByKindRef.current = { ...pendingCarryover.killsByKind };
         }
 
         const callbacks = {
           onHudUpdate: (snapshot: HudSnapshot) => {
             setHud(snapshot);
-            syncRecordsFromHud(snapshot);
+            syncRecordsFromHud(snapshot, false);
           },
-          onWaveClear: () => {
+          onWaveClear: (clearedWave: number) => {
+            const nextWave = Math.min(TOTAL_TOURS, clearedWave + 1);
+            const snap = buildSavedSnapshot(nextWave);
+            if (snap) {
+              persistPlayerProgress(recordsRef.current, snap, true);
+            }
             setGameState('UPGRADE_SHOP');
           },
           onVictory: (finalHud: HudSnapshot) => {
             setHud(finalHud);
-            syncRecordsFromHud(finalHud);
+            syncRecordsFromHud(finalHud, true, null);
             setGameState('VICTORY');
           },
           onGameOver: (finalHud: HudSnapshot) => {
             setHud(finalHud);
-            syncRecordsFromHud(finalHud);
+            syncRecordsFromHud(finalHud, true, null);
             setGameState('GAME_OVER');
           },
           onContextLost: () => {
@@ -265,7 +440,13 @@ export default function App() {
         engineRef.current = null;
       }
     };
-  }, [gameState === 'TITLE_MENU', renderMode, syncRecordsFromHud]);
+  }, [
+    gameState === 'TITLE_MENU',
+    renderMode,
+    syncRecordsFromHud,
+    buildSavedSnapshot,
+    persistPlayerProgress,
+  ]);
 
   useEffect(() => {
     engineRef.current?.setAutoFire(autoFire);
@@ -275,6 +456,9 @@ export default function App() {
     return () => {
       if (toastTimerRef.current !== null) {
         window.clearTimeout(toastTimerRef.current);
+      }
+      if (syncTimerRef.current !== null) {
+        window.clearTimeout(syncTimerRef.current);
       }
     };
   }, []);
@@ -358,15 +542,39 @@ export default function App() {
   const handleStartGame = useCallback(() => {
     soundEngine.unlock();
     setCameraPreset('chase');
+    carryoverRef.current = null;
+    carryoverPausedRef.current = false;
     lastRunKillsRef.current = 0;
     lastRunLeviathansRef.current = 0;
     lastRunCrocsRef.current = 0;
     lastRunKillsByKindRef.current = {};
+    persistPlayerProgress(recordsRef.current, null, true);
     setSessionUnlocked([]);
     setActiveToast(null);
     setHud(createInitialHud(recordsRef.current.highScore));
     setGameState('PLAYING');
-  }, []);
+  }, [persistPlayerProgress]);
+
+  const handleContinueSavedRun = useCallback(() => {
+    const run = savedRunRef.current;
+    if (!run) {
+      handleStartGame();
+      return;
+    }
+    soundEngine.unlock();
+    setCameraPreset('chase');
+    setDifficulty(run.difficulty);
+    setRenderMode(run.renderMode);
+    carryoverRef.current = run;
+    carryoverPausedRef.current = false;
+    lastRunKillsRef.current = run.monstersKilled;
+    lastRunLeviathansRef.current = run.leviathansKilled;
+    lastRunCrocsRef.current = run.crocsKilled;
+    lastRunKillsByKindRef.current = { ...run.killsByKind };
+    setSessionUnlocked([]);
+    setActiveToast(null);
+    setGameState('PLAYING');
+  }, [handleStartGame]);
 
   const handleRestart = useCallback(() => {
     soundEngine.unlock();
@@ -374,6 +582,7 @@ export default function App() {
     lastRunLeviathansRef.current = 0;
     lastRunCrocsRef.current = 0;
     lastRunKillsByKindRef.current = {};
+    persistPlayerProgress(recordsRef.current, null, true);
     setSessionUnlocked([]);
     setActiveToast(null);
     if (engineRef.current) {
@@ -382,24 +591,37 @@ export default function App() {
     } else {
       setGameState('PLAYING');
     }
-  }, [difficulty]);
+  }, [difficulty, persistPlayerProgress]);
 
   const handleReturnToMenu = useCallback(() => {
-    engineRef.current?.dispose();
-    engineRef.current = null;
+    if (engineRef.current) {
+      if (gameStateRef.current === 'PAUSED') {
+        const snap = buildSavedSnapshot();
+        if (snap) persistPlayerProgress(recordsRef.current, snap, true);
+      } else if (gameStateRef.current === 'UPGRADE_SHOP') {
+        const snap = buildSavedSnapshot(Math.min(TOTAL_TOURS, hud.wave + 1));
+        if (snap) persistPlayerProgress(recordsRef.current, snap, true);
+      }
+      engineRef.current.dispose();
+      engineRef.current = null;
+    }
     setActiveToast(null);
     setGameState('TITLE_MENU');
-  }, []);
+  }, [buildSavedSnapshot, hud.wave, persistPlayerProgress]);
 
   const handleTogglePause = useCallback(() => {
     if (gameState === 'PLAYING') {
       engineRef.current?.setPaused(true);
+      const snap = buildSavedSnapshot();
+      if (snap) {
+        persistPlayerProgress(recordsRef.current, snap, true);
+      }
       setGameState('PAUSED');
     } else if (gameState === 'PAUSED') {
       engineRef.current?.setPaused(false);
       setGameState('PLAYING');
     }
-  }, [gameState]);
+  }, [buildSavedSnapshot, gameState, persistPlayerProgress]);
 
   const handleToggleMute = useCallback(() => {
     const next = !muted;
@@ -411,40 +633,76 @@ export default function App() {
     setAutoFire((prev) => !prev);
   }, []);
 
-  const handleBuyUpgrade = useCallback((id: UpgradeId) => {
-    if (engineRef.current?.applyUpgrade(id)) {
-      setShopTick((t) => t + 1);
-    }
-  }, []);
+  const handleBuyUpgrade = useCallback(
+    (id: UpgradeId) => {
+      if (engineRef.current?.applyUpgrade(id)) {
+        setShopTick((t) => t + 1);
+        const current = engineRef.current.exportRunState();
+        const snap = buildSavedSnapshot(Math.min(TOTAL_TOURS, current.wave + 1));
+        if (snap) {
+          persistPlayerProgress(recordsRef.current, snap, true);
+        }
+      }
+    },
+    [buildSavedSnapshot, persistPlayerProgress]
+  );
 
   const handleRepairBoat = useCallback(() => {
     if (engineRef.current?.repairBoatWithCoins()) {
       setShopTick((t) => t + 1);
+      const current = engineRef.current.exportRunState();
+      const snap = buildSavedSnapshot(Math.min(TOTAL_TOURS, current.wave + 1));
+      if (snap) {
+        persistPlayerProgress(recordsRef.current, snap, true);
+      }
     }
-  }, []);
+  }, [buildSavedSnapshot, persistPlayerProgress]);
 
   const handleLaunchNextWave = useCallback(() => {
     engineRef.current?.launchNextWave();
+    const snap = buildSavedSnapshot();
+    if (snap) {
+      persistPlayerProgress(recordsRef.current, snap, true);
+    }
     setGameState('PLAYING');
-  }, []);
+  }, [buildSavedSnapshot, persistPlayerProgress]);
+
+  const displayHud: HudSnapshot = {
+    ...hud,
+    highScore: Math.max(records.highScore, hud.score),
+  };
 
   if (gameState === 'TITLE_MENU') {
     return (
-      <TitleMenu
-        difficulty={difficulty}
-        renderMode={renderMode}
-        records={records}
-        onSelectDifficulty={setDifficulty}
-        onSelectRenderMode={setRenderMode}
-        onStartGame={handleStartGame}
-      />
+      <>
+        <TitleMenu
+          difficulty={difficulty}
+          renderMode={renderMode}
+          records={records}
+          playerSession={playerSession}
+          savedRun={savedRun}
+          onSelectDifficulty={setDifficulty}
+          onSelectRenderMode={setRenderMode}
+          onStartGame={handleStartGame}
+          onContinueSavedRun={handleContinueSavedRun}
+          onOpenAccountModal={() => setAccountModalOpen(true)}
+        />
+        {accountModalOpen && (
+          <PlayerAccountModal
+            session={playerSession}
+            onClose={() => setAccountModalOpen(false)}
+            onAuthenticated={handleAuthenticated}
+            onLogout={handleLogout}
+          />
+        )}
+      </>
     );
   }
 
   return (
     <div className="flex h-dvh w-full flex-col overflow-hidden bg-[#040911] select-none">
       <TopHud
-        hud={hud}
+        hud={displayHud}
         renderMode={renderMode}
         muted={muted}
         autoFire={autoFire}
@@ -499,19 +757,21 @@ export default function App() {
         )}
 
         {/* Boss Health Bar (Top Center Overlay when Leviathan is active) */}
-        {hud.bossName && hud.bossHp > 0 && (
+        {displayHud.bossName && displayHud.bossHp > 0 && (
           <div className="pointer-events-none absolute left-1/2 top-4 z-10 w-full max-w-md -translate-x-1/2 px-4">
             <div className="rounded-md border border-emerald-400/25 bg-[#07111A]/92 px-4 py-2.5">
               <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold text-emerald-300">{hud.bossName}</span>
+                <span className="font-semibold text-emerald-300">{displayHud.bossName}</span>
                 <span className="font-mono-nums font-bold text-slate-200">
-                  {hud.bossHp}/{hud.bossMaxHp}
+                  {displayHud.bossHp}/{displayHud.bossMaxHp}
                 </span>
               </div>
               <div className="mt-1.5 h-2 w-full overflow-hidden rounded-xs bg-slate-800">
                 <div
                   className="h-full bg-emerald-400 transition-transform duration-100 origin-left"
-                  style={{ transform: `scaleX(${Math.max(0, Math.min(1, hud.bossHp / hud.bossMaxHp))})` }}
+                  style={{
+                    transform: `scaleX(${Math.max(0, Math.min(1, displayHud.bossHp / displayHud.bossMaxHp))})`,
+                  }}
                 />
               </div>
             </div>
@@ -519,33 +779,33 @@ export default function App() {
         )}
 
         {/* Wave Announcement Banner */}
-        {hud.waveBannerTimer > 0 && (
+        {displayHud.waveBannerTimer > 0 && (
           <div className="pointer-events-none absolute left-1/2 top-20 z-10 -translate-x-1/2 px-4 text-center">
             <div className="rounded-md border border-amber-400/30 bg-[#08121D]/92 px-5 py-2 shadow-lg">
               <span className="font-display text-lg font-bold tracking-wide text-amber-300 sm:text-xl">
-                {hud.waveBannerText}
+                {displayHud.waveBannerText}
               </span>
             </div>
           </div>
         )}
 
         {/* Pickup / Crocodile Gena Event Banner */}
-        {hud.eventBannerTimer > 0 && hud.eventBannerText && (
+        {displayHud.eventBannerTimer > 0 && displayHud.eventBannerText && (
           <div
             className={`pointer-events-none absolute left-1/2 z-10 -translate-x-1/2 px-4 text-center ${
-              hud.waveBannerTimer > 0 ? 'top-34' : 'top-20'
+              displayHud.waveBannerTimer > 0 ? 'top-34' : 'top-20'
             }`}
           >
             <div className="rounded-md border border-emerald-400/35 bg-[#071614]/92 px-4 py-1.5 shadow-lg">
               <span className="text-xs font-semibold tracking-wide text-emerald-300 sm:text-sm whitespace-nowrap">
-                {hud.eventBannerText}
+                {displayHud.eventBannerText}
               </span>
             </div>
           </div>
         )}
 
         {/* Island NPC Fisherman Shout Subtitle */}
-        {hud.npcShout && (
+        {displayHud.npcShout && (
           <div
             className={`pointer-events-none absolute left-1/2 z-20 w-full max-w-lg -translate-x-1/2 px-4 ${
               activeToast ? 'bottom-36 md:bottom-20' : 'bottom-36 md:bottom-6'
@@ -554,8 +814,8 @@ export default function App() {
             <div className="flex items-start gap-3 rounded-lg border border-amber-400/40 bg-[#08121D]/95 px-4 py-2.5 shadow-xl">
               <MessageSquareQuote className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
               <div className="min-w-0 text-xs leading-snug sm:text-sm">
-                <span className="font-bold text-amber-300">{hud.npcShout.speaker}: </span>
-                <span className="text-slate-100">«{hud.npcShout.text}»</span>
+                <span className="font-bold text-amber-300">{displayHud.npcShout.speaker}: </span>
+                <span className="text-slate-100">«{displayHud.npcShout.text}»</span>
               </div>
             </div>
           </div>
@@ -575,12 +835,30 @@ export default function App() {
           </div>
         )}
 
-        {/* Overdrive Timer Readout */}
-        {hud.overdriveTimer > 0 && (
-          <div className="pointer-events-none absolute bottom-4 left-4 z-10 rounded-md border border-amber-500/35 bg-[#08121D]/92 px-3 py-1.5 text-xs">
-            <span className="text-amber-300 font-semibold">Форсаж орудия</span>
-            <span className="mx-1.5 text-slate-500" aria-hidden="true">·</span>
-            <span className="font-mono-nums text-slate-100">{hud.overdriveTimer.toFixed(1)}с</span>
+        {/* Active Buff / Status Readouts (Overdrive, Poison, Electric Shock) */}
+        {(displayHud.overdriveTimer > 0 || displayHud.poisonTimer > 0 || displayHud.stunTimer > 0) && (
+          <div className="pointer-events-none absolute bottom-4 left-4 z-10 flex flex-col gap-1.5">
+            {displayHud.overdriveTimer > 0 && (
+              <div className="rounded-md border border-amber-500/35 bg-[#08121D]/92 px-3 py-1.5 text-xs">
+                <span className="font-semibold text-amber-300">Форсаж орудия</span>
+                <span className="mx-1.5 text-slate-500" aria-hidden="true">·</span>
+                <span className="font-mono-nums text-slate-100">{displayHud.overdriveTimer.toFixed(1)}с</span>
+              </div>
+            )}
+            {displayHud.poisonTimer > 0 && (
+              <div className="rounded-md border border-lime-500/40 bg-[#0d1c11]/92 px-3 py-1.5 text-xs">
+                <span className="font-semibold text-lime-300">Отравление (замедление)</span>
+                <span className="mx-1.5 text-slate-500" aria-hidden="true">·</span>
+                <span className="font-mono-nums text-slate-100">{displayHud.poisonTimer.toFixed(1)}с</span>
+              </div>
+            )}
+            {displayHud.stunTimer > 0 && (
+              <div className="rounded-md border border-cyan-400/45 bg-[#071824]/92 px-3 py-1.5 text-xs">
+                <span className="font-semibold text-cyan-300">Электрошок мотора</span>
+                <span className="mx-1.5 text-slate-500" aria-hidden="true">·</span>
+                <span className="font-mono-nums text-slate-100">{displayHud.stunTimer.toFixed(1)}с</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -643,7 +921,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => engineRef.current?.triggerDepthCharge()}
-              disabled={hud.depthCharges <= 0}
+              disabled={displayHud.depthCharges <= 0}
               className="flex h-12 w-12 items-center justify-center rounded-lg border border-amber-400/40 bg-[#081019]/85 text-amber-300 disabled:opacity-40"
               aria-label="Глубинный заряд"
             >
@@ -652,7 +930,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => engineRef.current?.triggerDash()}
-              disabled={!hud.dashReady}
+              disabled={!displayHud.dashReady}
               className="flex h-14 w-14 items-center justify-center rounded-lg border border-amber-400/60 bg-amber-500/90 text-slate-950 disabled:opacity-40"
               aria-label="Рывок"
             >
@@ -665,7 +943,7 @@ export default function App() {
       {/* Modals */}
       {gameState === 'UPGRADE_SHOP' && engineRef.current && (
         <UpgradeShopModal
-          wave={hud.wave}
+          wave={displayHud.wave}
           coins={engineRef.current.getCoins()}
           stats={engineRef.current.getStats()}
           upgradeLevels={engineRef.current.getUpgradeLevels()}
@@ -673,13 +951,14 @@ export default function App() {
           onBuyUpgrade={handleBuyUpgrade}
           onRepairBoat={handleRepairBoat}
           onNextWave={handleLaunchNextWave}
+          onSaveAndExit={handleReturnToMenu}
         />
       )}
 
       {(gameState === 'PAUSED' || gameState === 'GAME_OVER' || gameState === 'VICTORY') && (
         <GameOverModal
           mode={gameState}
-          hud={hud}
+          hud={displayHud}
           sessionUnlocked={sessionUnlocked}
           onResume={gameState === 'PAUSED' ? handleTogglePause : undefined}
           onRestart={handleRestart}

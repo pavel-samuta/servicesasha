@@ -1,0 +1,198 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidMonsterMap(m) {
+      return m is map
+        && m.size() <= 16
+        && m.keys().hasOnly([
+          'pike', 'catfish', 'eel', 'puffer', 'minnow',
+          'ersh', 'lin', 'peskar', 'karas',
+          'glass_ghost', 'mirage_ray', 'chrono_morok', 'sky_jelly', 'turtle_rift',
+          'leviathan', 'croc_gena'
+        ]);
+    }
+
+    function isValidUnlockedMap(u) {
+      return u is map
+        && u.size() <= 10
+        && u.keys().hasOnly([
+          'first_catch', 'clean_lake_40', 'survive_5_waves', 'slay_leviathan',
+          'slay_croc_gena', 'slay_new_trio', 'combo_10', 'score_5000',
+          'abyss_hunter_150', 'complete_20_tours'
+        ]);
+    }
+
+    function isValidRunStats(st) {
+      return st is map
+        && st.keys().hasAll([
+          'maxHp', 'hp', 'speed', 'damage', 'fireRate',
+          'projectileCount', 'projectileSpeed', 'dashCooldown',
+          'depthCharges', 'maxDepthCharges', 'depthRadius',
+          'critChance', 'lanternRadius'
+        ])
+        && st.keys().hasOnly([
+          'maxHp', 'hp', 'speed', 'damage', 'fireRate',
+          'projectileCount', 'projectileSpeed', 'dashCooldown',
+          'depthCharges', 'maxDepthCharges', 'depthRadius',
+          'critChance', 'lanternRadius'
+        ])
+        && st.maxHp is number && st.maxHp >= 1 && st.maxHp <= 10000
+        && st.hp is number && st.hp >= 0 && st.hp <= 10000
+        && st.speed is number && st.speed >= 50 && st.speed <= 2000
+        && st.damage is number && st.damage >= 1 && st.damage <= 10000
+        && st.fireRate is number && st.fireRate > 0 && st.fireRate <= 50
+        && st.projectileCount is int && st.projectileCount >= 1 && st.projectileCount <= 20
+        && st.projectileSpeed is number && st.projectileSpeed >= 100 && st.projectileSpeed <= 3000
+        && st.dashCooldown is number && st.dashCooldown >= 0.2 && st.dashCooldown <= 30
+        && st.depthCharges is int && st.depthCharges >= 0 && st.depthCharges <= 50
+        && st.maxDepthCharges is int && st.maxDepthCharges >= 1 && st.maxDepthCharges <= 50
+        && st.depthRadius is number && st.depthRadius >= 50 && st.depthRadius <= 2000
+        && st.critChance is number && st.critChance >= 0 && st.critChance <= 1
+        && st.lanternRadius is number && st.lanternRadius >= 50 && st.lanternRadius <= 2000;
+    }
+
+    function isValidUpgradeLevels(ul) {
+      return ul is map
+        && ul.keys().hasAll([
+          'multishot', 'heavy_harpoon', 'rapid_loader', 'reinforced_hull',
+          'turboprop', 'depth_charges', 'lantern_crit', 'hull_insulation'
+        ])
+        && ul.keys().hasOnly([
+          'multishot', 'heavy_harpoon', 'rapid_loader', 'reinforced_hull',
+          'turboprop', 'depth_charges', 'lantern_crit', 'hull_insulation'
+        ])
+        && ul.multishot is int && ul.multishot >= 0 && ul.multishot <= 10
+        && ul.heavy_harpoon is int && ul.heavy_harpoon >= 0 && ul.heavy_harpoon <= 10
+        && ul.rapid_loader is int && ul.rapid_loader >= 0 && ul.rapid_loader <= 10
+        && ul.reinforced_hull is int && ul.reinforced_hull >= 0 && ul.reinforced_hull <= 10
+        && ul.turboprop is int && ul.turboprop >= 0 && ul.turboprop <= 10
+        && ul.depth_charges is int && ul.depth_charges >= 0 && ul.depth_charges <= 10
+        && ul.lantern_crit is int && ul.lantern_crit >= 0 && ul.lantern_crit <= 10
+        && ul.hull_insulation is int && ul.hull_insulation >= 0 && ul.hull_insulation <= 10;
+    }
+
+    function isValidSavedRun(sr) {
+      return sr is map
+        && sr.keys().hasAll([
+          'difficulty', 'renderMode', 'wave', 'score', 'coins', 'weather',
+          'monstersKilled', 'leviathansKilled', 'crocsKilled', 'maxCombo',
+          'stats', 'upgradeLevels', 'killsByKind', 'savedAt'
+        ])
+        && sr.keys().hasOnly([
+          'difficulty', 'renderMode', 'wave', 'score', 'coins', 'weather',
+          'monstersKilled', 'leviathansKilled', 'crocsKilled', 'maxCombo',
+          'stats', 'upgradeLevels', 'killsByKind', 'savedAt'
+        ])
+        && sr.difficulty in ['calm', 'hunt', 'nightmare']
+        && sr.renderMode in ['2d', '3d']
+        && sr.weather in ['clear', 'mist', 'rain', 'storm']
+        && sr.wave is int && sr.wave >= 1 && sr.wave <= 20
+        && sr.score is int && sr.score >= 0 && sr.score <= 1000000000
+        && sr.coins is int && sr.coins >= 0 && sr.coins <= 10000000
+        && sr.monstersKilled is int && sr.monstersKilled >= 0 && sr.monstersKilled <= 10000000
+        && sr.leviathansKilled is int && sr.leviathansKilled >= 0 && sr.leviathansKilled <= 1000000
+        && sr.crocsKilled is int && sr.crocsKilled >= 0 && sr.crocsKilled <= 1000000
+        && sr.maxCombo is int && sr.maxCombo >= 0 && sr.maxCombo <= 100000
+        && sr.savedAt is string && sr.savedAt.size() >= 10 && sr.savedAt.size() <= 40
+        && isValidRunStats(sr.stats)
+        && isValidUpgradeLevels(sr.upgradeLevels)
+        && isValidMonsterMap(sr.killsByKind);
+    }
+
+    function isValidPlayerProfile(data) {
+      return data.keys().hasAll([
+          'uid', 'username', 'authMode', 'highScore', 'bestWave',
+          'totalMonstersKilled', 'bestRunKills', 'bestCombo',
+          'leviathansDefeated', 'crocsDefeated', 'defeatedByKind',
+          'unlocked', 'hasSavedRun', 'savedRun', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'username', 'authMode', 'highScore', 'bestWave',
+          'totalMonstersKilled', 'bestRunKills', 'bestCombo',
+          'leviathansDefeated', 'crocsDefeated', 'defeatedByKind',
+          'unlocked', 'hasSavedRun', 'savedRun', 'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && isValidId(data.uid) && data.uid == request.auth.uid
+        && data.username is string && data.username.size() >= 2 && data.username.size() <= 32
+        && data.authMode in ['password', 'google']
+        && data.highScore is int && data.highScore >= 0 && data.highScore <= 1000000000
+        && data.bestWave is int && data.bestWave >= 0 && data.bestWave <= 20
+        && data.totalMonstersKilled is int && data.totalMonstersKilled >= 0 && data.totalMonstersKilled <= 100000000
+        && data.bestRunKills is int && data.bestRunKills >= 0 && data.bestRunKills <= 10000000
+        && data.bestCombo is int && data.bestCombo >= 0 && data.bestCombo <= 100000
+        && data.leviathansDefeated is int && data.leviathansDefeated >= 0 && data.leviathansDefeated <= 1000000
+        && data.crocsDefeated is int && data.crocsDefeated >= 0 && data.crocsDefeated <= 1000000
+        && isValidMonsterMap(data.defeatedByKind)
+        && isValidUnlockedMap(data.unlocked)
+        && data.hasSavedRun is bool
+        && (
+          (data.hasSavedRun == false && data.savedRun == null)
+          || (data.hasSavedRun == true && isValidSavedRun(data.savedRun))
+        )
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /players/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidPlayerProfile(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(userId)
+        && isOwner(userId)
+        && isValidPlayerProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'username', 'highScore', 'bestWave', 'totalMonstersKilled',
+              'bestRunKills', 'bestCombo', 'leviathansDefeated', 'crocsDefeated',
+              'defeatedByKind', 'unlocked', 'hasSavedRun', 'savedRun', 'updatedAt'
+            ])
+          )
+          || (
+            incoming().hasSavedRun == false
+            && incoming().savedRun == null
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'hasSavedRun', 'savedRun', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isValidId(userId) && isOwner(userId);
+    }
+  }
+}

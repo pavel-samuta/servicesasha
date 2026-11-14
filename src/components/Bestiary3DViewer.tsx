@@ -30,6 +30,11 @@ const MODEL_CENTER_Z_OFFSET: Record<MonsterKind, number> = {
   karas: 0.06,
   croc_gena: 0.35,
   leviathan: 2.35,
+  glass_ghost: 0.08,
+  mirage_ray: 0.0,
+  chrono_morok: 0.05,
+  sky_jelly: 0.0,
+  turtle_rift: 0.0,
 };
 
 function disposeObjectTree(root: THREE.Object3D) {
@@ -224,9 +229,10 @@ export function Bestiary3DViewer({ kind, name }: Bestiary3DViewerProps) {
 
     const resetCamera = (k: MonsterKind = activeKind) => {
       const dist = getEntryViewDist(k);
-      const targetY = k === 'leviathan' ? 0.55 : k === 'croc_gena' ? 0.45 : 0.25;
+      const targetY =
+        k === 'sky_jelly' ? 1.45 : k === 'leviathan' ? 0.55 : k === 'croc_gena' ? 0.45 : 0.25;
       controls.target.set(0, targetY, 0);
-      camera.position.set(dist * 0.72, dist * 0.44, dist * 0.85);
+      camera.position.set(dist * 0.72, dist * 0.44 + (k === 'sky_jelly' ? 0.8 : 0), dist * 0.85);
       controls.minDistance = Math.max(1.8, dist * 0.48);
       controls.maxDistance = dist * 2.1;
       controls.update();
@@ -260,7 +266,14 @@ export function Bestiary3DViewer({ kind, name }: Bestiary3DViewerProps) {
         activeBitcoin = btc;
       }
 
-      targetPedestalScale = nextKind === 'leviathan' ? 2.25 : nextKind === 'eel' ? 1.28 : nextKind === 'minnow' ? 0.78 : 1.05;
+      targetPedestalScale =
+        nextKind === 'leviathan'
+          ? 2.25
+          : nextKind === 'eel' || nextKind === 'turtle_rift' || nextKind === 'mirage_ray'
+            ? 1.28
+            : nextKind === 'minnow'
+              ? 0.78
+              : 1.05;
       resetCamera(nextKind);
     };
 
@@ -326,8 +339,14 @@ export function Bestiary3DViewer({ kind, name }: Bestiary3DViewerProps) {
         if (activeRig && activeRig.segments.length > 0) {
           const swayFactor = activeKind === 'leviathan' ? 0.14 : 0.075;
           activeRig.segments.forEach((seg, idx) => {
-            seg.position.x = Math.sin(simTime * 4.5 - idx * 0.65) * idx * swayFactor;
+            seg.position.x =
+              (activeKind === 'sky_jelly' ? Math.cos((idx / 6) * Math.PI * 2) * 0.5 : 0) +
+              Math.sin(simTime * 4.5 - idx * 0.65) * (activeKind === 'sky_jelly' ? 0.08 : idx * swayFactor);
           });
+        }
+        if (activeRig?.chronoRings && activeRig.chronoRings.length > 0) {
+          activeRig.chronoRings[0].rotation.z += dt * 1.8;
+          if (activeRig.chronoRings[1]) activeRig.chronoRings[1].rotation.z -= dt * 1.4;
         }
         if (activeBitcoin) {
           activeBitcoin.rotation.y += dt * 3.8;
